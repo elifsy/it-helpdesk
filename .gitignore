@@ -1,0 +1,56 @@
+# Java
+target/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+
+# Node
+node_modules/
+dist/
+dist-staging/
+dist-ssr/
+*.local
+*.tsbuildinfo
+vite.config.*.timestamp-*
+
+# 环境与密钥
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+.ssh/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.iws
+
+# 日志与临时文件
+*.log
+logs/
+.tools/
+data/
+backups/
+shots/
+*.sql.gz
+*.dump
+*.bak
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.tmp
+__pycache__/
+*.pyc
+.workbuddy/
+.codex/
+.aws/
+.DS_Store
+Thumbs.db

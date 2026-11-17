@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tzme.helpdesk.mapper.AssetRequestMapper">
+
+  <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+    insert into it_asset_request(no,type,asset_no,applicant,dept,reason,expect_return,status)
+    values(#{no},#{type},#{assetNo},#{applicant},#{dept},#{reason},#{expectReturn},'PENDING')
+  </insert>
+
+  <update id="update">
+    update it_asset_request
+    <set>
+      <if test="status != null">status = #{status},</if>
+      <if test="approver != null">approver = #{approver},</if>
+      <if test="handledAt != null">handled_at = #{handledAt},</if>
+      <if test="newAssetNo != null">new_asset_no = #{newAssetNo},</if>
+      <if test="remark != null">remark = #{remark},</if>
+    </set>
+    where id = #{id}
+  </update>
+
+  <select id="findById" resultType="com.tzme.helpdesk.domain.AssetRequest">
+    select r.*, a.name as assetName, a.category as assetCategory
+    from it_asset_request r left join it_asset a on a.no = r.asset_no
+    where r.id = #{id}
+  </select>
+
+  <select id="findByNo" resultType="com.tzme.helpdesk.domain.AssetRequest">
+    select r.*, a.name as assetName, a.category as assetCategory
+    from it_asset_request r left join it_asset a on a.no = r.asset_no
+    where r.no = #{no}
+  </select>
+
+  <select id="list" resultType="com.tzme.helpdesk.domain.AssetRequest">
+    select r.*, a.name as assetName, a.category as assetCategory
+    from it_asset_request r left join it_asset a on a.no = r.asset_no
+    <where>
+      <if test="status != null and status != ''">and r.status = #{status}</if>
+      <if test="applicant != null and applicant != ''">and r.applicant = #{applicant}</if>
+      <if test="type != null and type != ''">and r.type = #{type}</if>
+    </where>
+    order by case r.status when 'PENDING' then 0 else 1 end, r.created_at desc
+    limit 200
+  </select>
+
+  <select id="countPending" resultType="long">
+    select count(*) from it_asset_request where status = 'PENDING'
+  </select>
+</mapper>

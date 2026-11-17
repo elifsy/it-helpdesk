@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tzme.helpdesk.mapper.TicketMapper">
+
+  <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+    insert into it_ticket(no,title,description,type,cat1,cat2,category_note,impact,work_impact,priority,status,
+      asset_no,creator_id,creator_name,dept_name,location,assignee_id,assignee_name,source,
+      kb_hit,tried_kb,due_at)
+    values(#{no},#{title},#{description},#{type},#{cat1},#{cat2},#{categoryNote},#{impact},#{workImpact},#{priority},
+      'NEW',#{assetNo},#{creatorId},#{creatorName},#{deptName},#{location},#{assigneeId},
+      #{assigneeName},#{source},#{kbHit},#{triedKb},#{dueAt})
+  </insert>
+
+  <select id="findByNo" resultType="com.tzme.helpdesk.domain.Ticket">
+    select * from it_ticket where no = #{no}
+  </select>
+
+  <update id="update">
+    update it_ticket
+    <set>
+      <if test="title != null">title = #{title},</if>
+      <if test="description != null">description = #{description},</if>
+      <if test="cat1 != null">cat1 = #{cat1},</if>
+      <if test="cat2 != null">cat2 = #{cat2},</if>
+      <if test="priority != null">priority = #{priority},</if>
+      <if test="status != null">status = #{status},</if>
+      <if test="assigneeId != null">assignee_id = #{assigneeId},</if>
+      <if test="assigneeName != null">assignee_name = #{assigneeName},</if>
+      <if test="solutionCode != null">solution_code = #{solutionCode},</if>
+      <if test="solutionNote != null">solution_note = #{solutionNote},</if>
+      <if test="rating != null">rating = #{rating},</if>
+      <if test="ratingTags != null">rating_tags = #{ratingTags},</if>
+      <if test="pausedMin != null">paused_min = #{pausedMin},</if>
+      <if test="acceptedAt != null">accepted_at = #{acceptedAt},</if>
+      <if test="assignedAt != null">assigned_at = #{assignedAt},</if>
+      <if test="dueAt != null">due_at = #{dueAt},</if>
+      <if test="finishedAt != null">finished_at = #{finishedAt},</if>
+      <if test="closedAt != null">closed_at = #{closedAt},</if>
+      updated_at = now()
+    </set>
+    where no = #{no}
+  </update>
+
+  <sql id="filter">
+    <where>
+      <choose>
+        <when test="status == 'PROCESSING'">
+          and status in ('ACCEPTED','IN_PROGRESS','PENDING_USER','PENDING_VENDOR')
+        </when>
+        <when test="status == 'OVERDUE'">
+          and status not in ('CLOSED','REJECTED','CANCELLED')
+          and due_at is not null and due_at &lt; now()
+        </when>
+        <otherwise>
+          <if test="status != null and status != ''">and status = #{status}</if>
+        </otherwise>
+      </choose>
+      <if test="open != null and open">and status not in ('CLOSED','REJECTED','CANCELLED')</if>
+      <if test="keyword != null and keyword != ''">
+        and (title like concat('%', #{keyword}, '%') or no like concat('%', #{keyword}, '%')
+             or description like concat('%', #{keyword}, '%'))
+      </if>
+      <if test="creatorId != null">and creator_id = #{creatorId}</if>
+      <if test="assigneeId != null">and assignee_id = #{assigneeId}</if>
+      <if test="priority != null and priority != ''">and priority = #{priority}</if>
+      <if test="cat1 != null and cat1 != ''">and cat1 = #{cat1}</if>
+      <if test="assetNo != null and assetNo != ''">and asset_no = #{assetNo}</if>
+    </where>
+  </sql>
+
+  <select id="list" resultType="com.tzme.helpdesk.domain.Ticket">
+    select * from it_ticket
+    <include refid="filter"/>
+    order by
+      case status
+        when 'NEW' then 0 when 'ACCEPTED' then 1 when 'IN_PROGRESS' then 2
+        when 'PENDING_CONFIRM' then 3 else 4 end,
+      case when due_at is null then 1 else 0 end,
+      due_at asc,
+      created_at desc,
+      id desc
+    limit #{offset}, #{size}
+  </select>
+
+  <select id="count" resultType="long">
+    select count(*) from it_ticket
+    <include refid="filter"/>
+  </select>
+
+  <!-- 只为已获准查看的本页工单返回数量，队列中的其他工单不对用户展开。 -->
+  <select id="queueCounts" resultType="com.tzme.helpdesk.domain.Ticket">
+    select current_ticket.no, count(ahead.id) as queue_ahead
+    from it_ticket current_ticket
+    left join it_ticket ahead on ahead.assignee_id = current_ticket.assignee_id
+      and ahead.status in ('ACCEPTED','IN_PROGRESS','PENDING_USER','PENDING_VENDOR')
+      and (
+        coalesce(ahead.assigned_at,ahead.accepted_at,ahead.created_at)
+          &lt; coalesce(current_ticket.assigned_at,current_ticket.accepted_at,current_ticket.created_at)
+        or (coalesce(ahead.assigned_at,ahead.accepted_at,ahead.created_at)
+          = coalesce(current_ticket.assigned_at,current_ticket.accepted_at,current_ticket.created_at)
+          and ahead.id &lt; current_ticket.id)
+      )
+    where current_ticket.assignee_id is not null
+      and current_ticket.status in ('ACCEPTED','IN_PROGRESS','PENDING_USER','PENDING_VENDOR')
+      and current_ticket.no in
+      <foreach collection="nos" item="no" open="(" separator="," close=")">#{no}</foreach>
+    group by current_ticket.id,current_ticket.no
+  </select>
+
+  <select id="findTimeout" resultType="com.tzme.helpdesk.domain.Ticket">
+    select * from it_ticket
+    where status not in ('CLOSED','REJECTED','CANCELLED')
+      and due_at is not null and due_at &lt; now()
+    order by due_at asc
+    limit #{limit}
+  </select>
+
+  <resultMap id="overviewResult" type="java.util.LinkedHashMap" autoMapping="false">
+    <result column="total" property="total"/>
+    <result column="openCount" property="openCount"/>
+    <result column="closedCount" property="closedCount"/>
+    <result column="pendingAccept" property="pendingAccept"/>
+    <result column="processing" property="processing"/>
+    <result column="overdueCount" property="overdueCount"/>
+    <result column="avgRating" property="avgRating"/>
+    <result column="ratedCount" property="ratedCount"/>
+    <result column="avgMinutes" property="avgMinutes"/>
+    <result column="slaOk" property="slaOk"/>
+    <result column="slaTotal" property="slaTotal"/>
+    <result column="triedKbCount" property="triedKbCount"/>
+  </resultMap>
+
+  <select id="overview" resultMap="overviewResult">
+    select
+      count(*) as `total`,
+      coalesce(sum(case when status not in ('CLOSED','REJECTED','CANCELLED') then 1 else 0 end),0) as `openCount`,
+      coalesce(sum(case when status = 'CLOSED' then 1 else 0 end),0) as `closedCount`,
+      coalesce(sum(case when status = 'NEW' then 1 else 0 end),0) as `pendingAccept`,
+      coalesce(sum(case when status in ('ACCEPTED','IN_PROGRESS','PENDING_USER','PENDING_VENDOR') then 1 else 0 end),0) as `processing`,
+      coalesce(sum(case when status not in ('CLOSED','REJECTED','CANCELLED') and due_at is not null and due_at &lt; now() then 1 else 0 end),0) as `overdueCount`,
+      coalesce(round(avg(case when rating &gt; 0 then rating end), 2),0) as `avgRating`,
+      coalesce(sum(case when rating &gt; 0 then 1 else 0 end),0) as `ratedCount`,
+      coalesce(round(avg(case when finished_at is not null then timestampdiff(minute, created_at, finished_at) end), 0),0) as `avgMinutes`,
+      coalesce(sum(case when finished_at is not null and due_at is not null and finished_at &lt;= due_at then 1 else 0 end),0) as `slaOk`,
+      coalesce(sum(case when finished_at is not null and due_at is not null then 1 else 0 end),0) as `slaTotal`,
+      coalesce(sum(case when tried_kb = 1 then 1 else 0 end),0) as `triedKbCount`
+    from it_ticket
+  </select>
+
+  <select id="trend" resultType="java.util.LinkedHashMap">
+    select cast(created_at as date) as `day`, count(*) as `count`
+    from it_ticket
+    where created_at &gt;= #{since}
+    group by cast(created_at as date)
+    order by min(created_at)
+  </select>
+
+  <select id="categoryDist" resultType="java.util.LinkedHashMap">
+    select cat1 as `name`, count(*) as `value`
+    from it_ticket
+    where created_at &gt;= #{since}
+    group by cat1
+    order by `value` desc
+  </select>
+
+  <select id="engineerRank" resultType="java.util.LinkedHashMap">
+    select assignee_name as `name`, count(*) as `total`,
+      coalesce(round(avg(case when rating &gt; 0 then rating end), 2), 0) as `rating`,
+      coalesce(round(avg(case when finished_at is not null then timestampdiff(minute, created_at, finished_at) end), 0), 0) as `avgMinutes`
+    from it_ticket
+    where assignee_name is not null and assignee_name &lt;&gt; ''
+      and created_at &gt;= #{since}
+    group by assignee_name
+    order by total desc
+    limit 10
+  </select>
+
+  <select id="problemAssets" resultType="java.util.LinkedHashMap">
+    select asset_no as `no`, count(*) as `times`
+    from it_ticket
+    where asset_no is not null and asset_no &lt;&gt; ''
+    group by asset_no
+    order by times desc
+    limit #{limit}
+  </select>
+</mapper>

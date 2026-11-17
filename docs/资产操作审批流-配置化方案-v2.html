@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>资产操作审批流 · 配置化方案 v0.2</title>
+<style>
+:root{
+  --brand:#0071e3; --brand-l:#eaf3ff; --brand-d:#0b5cc0; --ink:#1d1d1f; --ink2:#3a3a3c; --t3:#86868b; --t4:#a1a1a6;
+  --line:#e3e5e9; --line2:#f0f1f4; --bg:#f5f5f7; --card:#fff;
+  --ok:#1a7f4b; --ok-l:#e9f7ef; --warn:#b26a00; --warn-l:#fff6e6; --danger:#b3261e; --danger-l:#fff0ee; --purple:#6b4fc9; --purple-l:#f0ecfb;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.75;-webkit-font-smoothing:antialiased}
+a{color:var(--brand);text-decoration:none}
+.wrap{max-width:1200px;margin:0 auto;padding:32px 24px 90px;display:grid;grid-template-columns:210px minmax(0,1fr);gap:34px}
+aside.toc{position:sticky;top:28px;align-self:start;font-size:12.5px}
+aside.toc .tt{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--t4);margin-bottom:10px}
+aside.toc a{display:block;padding:5px 10px;border-radius:8px;color:var(--ink2)}
+aside.toc a:hover{background:#eaecf0;color:var(--ink)}
+main{min-width:0}
+.hero{background:linear-gradient(125deg,#00559f,#0071e3 48%,#3b9bff);color:#fff;border-radius:24px;padding:34px 36px;box-shadow:0 18px 44px rgba(0,102,204,.18)}
+.hero .eyebrow{font-size:11.5px;letter-spacing:.18em;text-transform:uppercase;opacity:.85}
+.hero h1{margin:10px 0 8px;font-size:30px;line-height:1.3;letter-spacing:-.02em;font-weight:640}
+.hero p{margin:0;max-width:680px;font-size:13.5px;color:rgba(255,255,255,.92)}
+.hero .meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}
+.hero .meta span{font-size:11.5px;padding:4px 11px;border-radius:999px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.22)}
+section{background:var(--card);border-radius:20px;padding:28px 30px;margin-top:18px;box-shadow:0 2px 14px rgba(0,0,0,.035)}
+h2{margin:0 0 6px;font-size:19px;letter-spacing:-.01em;font-weight:640}
+h2 .n{color:var(--brand);font-variant-numeric:tabular-nums;margin-right:8px;font-weight:700}
+h3{margin:24px 0 8px;font-size:14.5px;font-weight:640}
+h4{margin:16px 0 6px;font-size:13px;font-weight:640;color:var(--ink2)}
+.lead{color:var(--ink2);font-size:13.5px;margin:0 0 6px}
+p{margin:8px 0}
+ul,ol{margin:8px 0;padding-left:20px}
+li{margin:4px 0}
+.muted{color:var(--t3)}
+.small{font-size:12px}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+.tag{display:inline-block;padding:1px 7px;border-radius:6px;font-size:10.5px;font-weight:600;vertical-align:1px;white-space:nowrap}
+.t-brand{background:var(--brand-l);color:var(--brand)}
+.t-ok{background:var(--ok-l);color:var(--ok)}
+.t-warn{background:var(--warn-l);color:var(--warn)}
+.t-danger{background:var(--danger-l);color:var(--danger)}
+.t-gray{background:#eef0f3;color:var(--t3)}
+.t-purple{background:var(--purple-l);color:var(--purple)}
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:12.5px}
+th,td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--line2);vertical-align:top}
+th{font-size:11.5px;color:var(--t3);font-weight:600;background:#fafbfc;border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.box{border:1px solid var(--line);border-radius:14px;padding:14px 16px;background:#fcfcfd}
+.box.hl{background:var(--brand-l);border-color:#cfe4ff}
+.box b{font-size:13px}
+.box p{margin:6px 0 0;font-size:12.5px;color:var(--ink2)}
+.note{font-size:12px;color:var(--t3);margin-top:8px}
+.decision{border-left:3px solid var(--brand);background:#f7fbff;padding:12px 14px;border-radius:0 12px 12px 0;margin:12px 0}
+.decision b{font-size:12.5px}
+
+/* 差异对比 */
+.diff{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:10px}
+.diff .col{border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.diff .col h5{margin:0;padding:10px 14px;font-size:12px;font-weight:640;background:#fafbfc;border-bottom:1px solid var(--line2)}
+.diff .col.new h5{background:var(--brand-l);color:var(--brand-d)}
+.diff .col ul{margin:10px 14px;padding-left:18px;font-size:12.5px;color:var(--ink2)}
+
+/* 设计器 mock */
+.app-mock{border:1px solid var(--line);border-radius:16px;overflow:hidden;background:#fff}
+.app-bar{display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--line2);font-size:11px;color:var(--t4);background:#fbfcfd}
+.app-bar i{width:8px;height:8px;border-radius:50%;background:#e2e5ea;display:inline-block}
+.designer{display:grid;grid-template-columns:112px minmax(0,1fr) 252px;min-height:520px}
+.dg-tools{border-right:1px solid var(--line2);background:#fafbfc;padding:12px 10px}
+.dg-tools .lb{font-size:10.5px;color:var(--t4);letter-spacing:.08em;margin:4px 0 8px}
+.dg-tools .tool{display:flex;align-items:center;gap:6px;padding:7px 8px;border-radius:9px;background:#fff;border:1px solid var(--line);font-size:11px;color:var(--ink2);margin-bottom:6px}
+.dg-tools .tool.act{border-color:var(--brand);color:var(--brand);box-shadow:0 0 0 2px rgba(0,113,227,.08)}
+.dg-canvas{padding:18px 14px 24px;background:
+  linear-gradient(#fbfcfe,#fbfcfe),
+  repeating-linear-gradient(0deg,transparent 0 23px,#f2f4f7 23px 24px);
+  background-blend-mode:normal;display:flex;flex-direction:column;align-items:center;gap:0}
+.node{position:relative;width:100%;max-width:380px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px 13px;box-shadow:0 2px 8px rgba(16,24,40,.04)}
+.node .nt{font-size:12px;font-weight:640;display:flex;align-items:center;gap:7px}
+.node .ns{font-size:10.5px;color:var(--t3);margin-top:3px}
+.node.start,.node.end{max-width:190px;text-align:center;background:#eef4ff;border-color:#cfe0fa;color:#14488c;font-size:12px;font-weight:600;padding:8px}
+.node.cond{border-color:#f0d9a8;background:#fffcf3}
+.node.cond .nt{color:#8a5300}
+.node.cc{border-style:dashed;background:#fcfcfd}
+.node .badge{font-size:10px;padding:1px 6px;border-radius:5px;background:#f1f3f6;color:var(--t3);font-weight:500}
+.linkv{width:2px;height:18px;background:#dbe1ea}
+.branch{width:100%;max-width:440px;border:1px solid #f0d9a8;border-radius:14px;background:#fffdf7;padding:10px}
+.branch .bt{font-size:11px;color:#8a5300;font-weight:640;display:flex;justify-content:space-between;align-items:center}
+.branch .lane{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:9px}
+.lane .col{background:#fff;border:1px dashed #e8dcc2;border-radius:10px;padding:8px}
+.lane .col .ch{font-size:10.5px;color:#8a5300;margin-bottom:7px}
+.lane .mini{border:1px solid var(--line);border-radius:9px;padding:6px 8px;font-size:10.5px;margin-bottom:5px;background:#fff;line-height:1.6}
+.lane .mini b{font-size:11.5px}
+.lane .mini.small{color:var(--t3)}
+.dg-panel{border-left:1px solid var(--line2);padding:12px;background:#fff}
+.dg-panel .ph{display:flex;align-items:center;justify-content:space-between;font-size:12.5px;font-weight:640;margin-bottom:10px}
+.fld-mk{margin-bottom:11px}
+.fld-mk .fl{font-size:10.5px;color:var(--t3);margin-bottom:4px}
+.fld-mk .fv{border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:11.5px;display:flex;align-items:center;gap:6px;background:#fff}
+.fld-mk .fv .ph-t{color:var(--t4)}
+.seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg span{flex:1;text-align:center;font-size:11px;padding:6px 0;color:var(--t3)}
+.seg span.on{background:var(--brand);color:#fff;font-weight:600}
+.chip{display:inline-block;font-size:10.5px;padding:2px 8px;border-radius:999px;background:#eef4ff;color:var(--brand-d);margin:2px 4px 2px 0}
+
+/* 条件表格 mock */
+.cond-row{display:grid;grid-template-columns:1.1fr .8fr 1.2fr 30px;gap:8px;align-items:center;margin-bottom:8px}
+.cond-row .cell{border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:11.5px;background:#fff}
+.cond-row .cell.v{font-weight:600}
+.cond-row .del{color:var(--t4);text-align:center;font-size:14px}
+.and-or{font-size:10.5px;color:var(--t4);margin:2px 0 6px 2px}
+
+/* 列表 mock */
+.row-item{display:flex;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid var(--line2);font-size:12.5px}
+.row-item:last-child{border-bottom:0}
+.row-item .sp{flex:1}
+.tabs-mk{display:flex;gap:16px;font-size:12px;color:var(--t3);border-bottom:1px solid var(--line2);padding-bottom:9px;margin-bottom:6px}
+.tabs-mk b{color:var(--ink);position:relative}
+.tabs-mk b:after{content:"";position:absolute;left:0;right:0;bottom:-10px;height:2px;background:var(--brand);border-radius:2px}
+.flow-chip{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--ink2);background:#f7f8fa;border:1px solid var(--line2);border-radius:999px;padding:3px 9px}
+.flow-chip i{width:5px;height:5px;border-radius:50%;background:var(--brand);display:inline-block}
+.arrow-s{color:var(--t4);font-size:11px}
+
+/* 试运行 */
+.dryrun{display:grid;grid-template-columns:300px minmax(0,1fr);gap:14px}
+.dryrun .in{border:1px solid var(--line);border-radius:14px;padding:14px;background:#fcfcfd}
+.dryrun .out{border:1px solid #cfe4ff;border-radius:14px;padding:14px;background:#f8fbff}
+.kvline{display:flex;gap:8px;font-size:12px;padding:5px 0;border-bottom:1px dashed #e9edf3}
+.kvline:last-child{border-bottom:0}
+.kvline span{color:var(--t3);width:66px;flex:0 0 auto}
+.steps{margin:10px 0 0;padding:0;list-style:none}
+.steps li{display:flex;gap:9px;align-items:flex-start;padding:8px 0;font-size:12px}
+.steps li .n{width:19px;height:19px;border-radius:50%;background:var(--brand);color:#fff;font-size:10.5px;display:grid;place-items:center;flex:0 0 auto;margin-top:1px}
+.caption{font-size:11.5px;color:var(--t3);margin-top:10px;text-align:center}
+@media (max-width:1020px){
+  .wrap{grid-template-columns:minmax(0,1fr);gap:18px} aside.toc{display:none}
+  .grid2,.grid3,.diff,.dryrun{grid-template-columns:1fr}
+  .designer{grid-template-columns:1fr}
+  .dg-tools{display:none} .dg-panel{border-left:0;border-top:1px solid var(--line2)}
+  .branch .lane{grid-template-columns:1fr}
+  .cond-row{grid-template-columns:1fr}
+}
+@media print{ body{background:#fff} section{box-shadow:none;border:1px solid #e6e8ec;break-inside:avoid} aside.toc{display:none} .wrap{grid-template-columns:1fr;padding:0} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <aside class="toc">
+    <div class="tt">目录</div>
+    <a href="#s1">01 v0.2 改了什么</a>
+    <a href="#s2">02 配置能力全景</a>
+    <a href="#s3">03 适用范围与优先级</a>
+    <a href="#s4">04 条件变量与表达式</a>
+    <a href="#s5">05 节点配置项</a>
+    <a href="#s6">06 流程设计器（效果）</a>
+    <a href="#s7">07 条件分支配置（效果）</a>
+    <a href="#s8">08 模板列表（效果）</a>
+    <a href="#s9">09 试运行与冲突检测</a>
+    <a href="#s10">10 三个真实资产的配置示例</a>
+    <a href="#s11">11 版本、灰度与执行</a>
+    <a href="#s12">12 数据模型</a>
+    <a href="#s13">13 钉钉能力对照</a>
+    <a href="#s14">14 权限与审计</a>
+    <a href="#s15">15 分期与待确认</a>
+    <a href="#s16">附录 · 直接用钉钉审批</a>
+  </aside>
+
+  <main>
+    <div class="hero">
+      <div class="eyebrow">IT 服务台 · 方案说明 v0.2（配置化）</div>
+      <h1>审批流可配置：按资产、按条件走不同的链</h1>
+      <p>参照钉钉审批的流程设计器，把「谁批、批几层、什么情况跳节点、抄送给谁」全部做成可视化配置；新增一类资产的审批规则不再改代码、不用发版。</p>
+      <div class="meta">
+        <span>2026-11-17</span>
+        <span>取代 v0.1 的固定链路</span>
+        <span>状态：待拍板</span>
+      </div>
+    </div>
+
+    <section id="s1">
+      <h2><span class="n">01</span>v0.2 改了什么</h2>
+      <p class="lead">v0.1 给的是「四条写死的链」，这一版把链变成数据：配置出来的流程可以有多条、各自匹配不同资产，条件、节点、抄送都能改。</p>
+      <div class="diff">
+        <div class="col">
+          <h5>v0.1 · 固定链路</h5>
+          <ul>
+            <li>领用 = 部门负责人 → 资产管理员（写死）</li>
+            <li>条件只有两个（服务器加节点、借用超 7 天）</li>
+            <li>想加一条新规则 → 改代码 + 发版</li>
+            <li>同一业务类型只能有一条链</li>
+          </ul>
+        </div>
+        <div class="col new">
+          <h5>v0.2 · 可配置</h5>
+          <ul>
+            <li>同一业务可挂多条流程，按「适用范围 + 条件」匹配，命中优先级最高的一条</li>
+            <li>画布式设计器：审批人节点、条件分支、抄送节点自由组合</li>
+            <li>审批人支持 6 种来源（指定人/部门主管/连续多级/角色/资产管理员/发起人自选）</li>
+            <li>条件行用「字段 + 运算符 + 值」拼，支持 且/或 分组</li>
+            <li>改完可「试运行」预演链路，再发布新版本</li>
+          </ul>
+        </div>
+      </div>
+      <div class="decision"><b>一条原则：配置描述「规则」，不描述「人」。</b><br />
+      节点里只写「申请人的部门主管」「资产管理员」这类角色，具体是谁在运行时按组织数据解析——人员调动、部门换负责人不需要改流程。</div>
+    </section>
+
+    <section id="s2">
+      <h2><span class="n">02</span>配置能力全景</h2>
+      <p class="lead">按钉钉审批的六层结构来设计，我们只做与资产相关的部分，不重复造一个通用 OA。</p>
+      <table>
+        <thead><tr><th style="width:120px">层</th><th>我们能配什么</th><th style="width:230px">说明</th></tr></thead>
+        <tbody>
+          <tr><td><b>流程模板</b></td><td>名称、业务类型、适用范围（资产分类/指定资产）、优先级、启停、备注</td><td>一个业务可有多条模板</td></tr>
+          <tr><td><b>表单</b></td><td>沿用现有申请单字段（业务类型、资产、事由、借用天数…），只读展示 + 少量可加字段</td><td>不自建表单设计器</td></tr>
+          <tr><td><b>节点</b></td><td>审批人节点 / 条件分支 / 抄送节点 / 结束</td><td>画布纵向排列</td></tr>
+          <tr><td><b>审批人</b></td><td>指定成员、部门主管、连续多级主管、角色/权限、资产管理员、发起人自选、表单关联人</td><td>6+1 种来源</td></tr>
+          <tr><td><b>多人规则</b></td><td>或签（任一同意）/ 会签（全部同意）/ 依次审批</td><td>空审批人策略可配</td></tr>
+          <tr><td><b>条件</b></td><td>字段 + 运算符 + 值，支持 且/或；分支按顺序匹配</td><td>命中第一条即走该分支</td></tr>
+          <tr><td><b>抄送 / 通知</b></td><td>抄送节点（不阻塞）、节点提醒、超时催办、结果回执</td><td>钉钉 actionCard 深链</td></tr>
+        </tbody>
+      </table>
+      <div class="grid3" style="margin-top:12px">
+        <div class="box hl"><b>配得细</b><p>节点可单独设审批方式、超时、是否允许转交/加签、审批人为空时怎么办。</p></div>
+        <div class="box hl"><b>不改码</b><p>新增一类资产（如「测量仪器」）的审批规则，管理员在页面上配完即生效。</p></div>
+        <div class="box hl"><b>可预演</b><p>发布前用一笔真实申请试运行，直接看到会走哪条链、每个节点是谁。</p></div>
+      </div>
+    </section>
+
+    <section id="s3">
+      <h2><span class="n">03</span>适用范围与优先级</h2>
+      <p class="lead">「不同资产走不同流」靠三重匹配实现，越具体越优先。</p>
+      <table>
+        <thead><tr><th style="width:60px">优先级</th><th style="width:190px">匹配维度</th><th>例子</th><th style="width:200px">适用场景</th></tr></thead>
+        <tbody>
+          <tr><td><b>P100</b><br><span class="tag t-danger">最高</span></td><td>指定资产（白名单）</td><td>资产编号 <span class="mono">IT-SRV-2024-0001</span> 的核心数据库服务器</td><td>唯一关键设备，单独定规则</td></tr>
+          <tr><td><b>P50</b></td><td>业务类型 + 资产分类</td><td>领用 · 分类 = 服务器 / 网络设备</td><td>按资产类别差异化管理</td></tr>
+          <tr><td><b>P30</b></td><td>业务类型 + 条件表达式</td><td>借用 · 借用天数 &gt; 7 且 资产分类 = 会议室设备</td><td>同一分类里的例外情况</td></tr>
+          <tr><td><b>P10</b><br><span class="tag t-gray">兜底</span></td><td>业务类型（默认流）</td><td>领用 · 默认 → 部门负责人 → 资产管理员</td><td>没有更具体规则时使用</td></tr>
+        </tbody>
+      </table>
+      <h3>匹配顺序（运行时）</h3>
+      <ol>
+        <li>取「业务类型」匹配、且状态为启用的全部流程，按优先级降序。</li>
+        <li>逐条判断适用范围：指定资产命中 → 直接采用；分类集合命中 → 判断条件表达式。</li>
+        <li>条件满足的第一条即为本次实例使用的流程；流程内再按分支顺序匹配，命中第一条分支。</li>
+        <li>全部未命中 → 用该业务的「默认流」；默认流不存在则单人审批（资产管理员）。</li>
+      </ol>
+      <p class="note">保存模板时自动做重叠检测：两条同优先级、同适用范围且条件区间重叠时提示「可能冲突」，避免上线后不确定走哪条。</p>
+    </section>
+
+    <section id="s4">
+      <h2><span class="n">04</span>条件变量与表达式</h2>
+      <p class="lead">条件行的左边是变量，全部来自系统已有数据；标 <span class="tag t-warn">需扩展</span> 的是要补字段才能用的。</p>
+      <table>
+        <thead><tr><th style="width:170px">变量</th><th style="width:110px">类型</th><th style="width:210px">取值来源</th><th>示例用法</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">bizType</td><td>枚举</td><td>领用/借用/更换/归还</td><td>= 领用</td></tr>
+          <tr><td class="mono">asset.category</td><td>枚举（多选）</td><td>资产台账分类</td><td>∈ [服务器, 网络设备]</td></tr>
+          <tr><td class="mono">asset.no</td><td>文本</td><td>资产编号</td><td>= IT-SRV-2024-0001</td></tr>
+          <tr><td class="mono">asset.status</td><td>枚举</td><td>在用/闲置/借出中…</td><td>= 闲置</td></tr>
+          <tr><td class="mono">asset.inWarranty</td><td>布尔</td><td>warrantyEnd 是否晚于今天</td><td>= 否（过保设备更换需多一层）</td></tr>
+          <tr><td class="mono">asset.ageMonths</td><td>数字</td><td>buyDate 到今天的月数</td><td>&gt; 60（用满 5 年）</td></tr>
+          <tr><td class="mono">asset.value</td><td>数字</td><td>资产原值 <span class="tag t-warn">需扩展</span>（台账加字段）</td><td>&ge; 8000</td></tr>
+          <tr><td class="mono">request.borrowDays</td><td>数字</td><td>预期归还日 − 今天</td><td>&gt; 7</td></tr>
+          <tr><td class="mono">applicant.dept</td><td>组织</td><td>申请人部门</td><td>= 生产部</td></tr>
+          <tr><td class="mono">applicant.deptLevel</td><td>数字</td><td>部门在组织树中的层级</td><td>&ge; 2（二级部门以下）</td></tr>
+          <tr><td class="mono">applicant.crossDept</td><td>布尔</td><td>资产当前使用人部门 ≠ 申请人部门</td><td>= 是（跨部门借用要多批一层）</td></tr>
+          <tr><td class="mono">applicant.role</td><td>枚举</td><td>USER/IT/ADMIN</td><td>≠ IT</td></tr>
+          <tr><td class="mono">request.qty</td><td>数字</td><td>申请数量 <span class="tag t-warn">需扩展</span>（当前一单一台）</td><td>&gt; 1</td></tr>
+        </tbody>
+      </table>
+      <h3>运算符</h3>
+      <p class="small">等于 / 不等于 / 包含任一 / 不包含 / 大于 / 小于 / 大于等于 / 小于等于 / 为空 / 不为空；布尔值直接用「是 / 否」下拉。</p>
+      <h3>组合方式</h3>
+      <div class="box"><b>条件组 = 若干行 + 行间关系</b>
+        <p>行与行之间可选「且 / 或」（同一组内统一关系，和钉钉一致，避免理解成本）。需要混合逻辑时拆成两个分支，用分支顺序表达优先级。</p></div>
+      <p class="note">举例：<span class="mono">asset.category ∈ [服务器,网络设备] 且 asset.inWarranty = 否</span> → 「服务器过保领用」独立分支，多一个 IT 主管节点。</p>
+    </section>
+
+    <section id="s5">
+      <h2><span class="n">05</span>节点配置项（对齐钉钉）</h2>
+      <p class="lead">每个审批节点都有下面这些开关，配得细但不至于难懂。</p>
+      <table>
+        <thead><tr><th style="width:130px">配置项</th><th style="width:290px">可选值</th><th>说明 / 我们的默认</th></tr></thead>
+        <tbody>
+          <tr><td><b>节点名称</b></td><td>自由文本</td><td>显示在时间线与钉钉卡片里，如「资产管理员审批」</td></tr>
+          <tr><td><b>审批人来源</b></td><td>指定成员 / 部门主管 / 连续多级主管 / 角色·权限 / 资产管理员 / 发起人自选</td><td>默认「部门主管」或「资产管理员」</td></tr>
+          <tr><td><b>多人审批方式</b></td><td>或签（一人通过即过）/ 会签（全部通过）/ 依次审批</td><td>默认或签；会签常用于「资产管理员 + IT 主管共同确认」</td></tr>
+          <tr><td><b>审批人为空</b></td><td>自动跳过 / 转交管理员 / 阻止提交</td><td>默认「自动跳过」并留痕，避免卡单</td></tr>
+          <tr><td><b>超时提醒</b></td><td>不提醒 / 4 小时 / 8 小时 / 24 小时</td><td>默认 4 小时催办，24 小时升级给管理员</td></tr>
+          <tr><td><b>允许操作</b></td><td>转交 / 加签 / 退回上一节点 / 退回发起人</td><td>默认允许转交与退回发起人；加签仅 IT 主管节点开启</td></tr>
+          <tr><td><b>意见必填</b></td><td>是 / 否</td><td>驳回时一律必填；同意时默认选填</td></tr>
+          <tr><td><b>字段权限</b></td><td>可编辑字段白名单</td><td>例：资产管理员节点可改「配发设备编号」，其余只读</td></tr>
+          <tr><td><b>通过后</b></td><td>进入下一节点 / 直接执行 / 抄送后执行</td><td>末节点的「执行」由系统动作完成（改资产状态、写履历）</td></tr>
+          <tr><td><b>抄送节点</b></td><td>抄送给：部门主管 / 资产管理员 / 指定人 / 申请人</td><td>只发通知不阻塞，出现在时间线的「已抄送」里</td></tr>
+        </tbody>
+      </table>
+      <div class="decision"><b>「连续多级主管」怎么落地</b><br />
+      按 <span class="mono">sys_dept.parent_id</span> 向上找 N 级部门，取每级部门的负责人；某级没配负责人则跳过该级并留痕。默认 N=1（直属部门主管），需要时配 2 级。</div>
+    </section>
+
+    <section id="s6">
+      <h2><span class="n">06</span>流程设计器（界面效果）</h2>
+      <p class="lead">左边是节点类型，中间是纵向画布（条件分支左右分叉），右边是当前节点的属性面板。交互参照钉钉审批的流程设计页。</p>
+      <div class="app-mock">
+        <div class="app-bar"><i></i><i></i><i></i><span style="margin-left:6px">/#/admin/approval-flows/12/design</span></div>
+        <div class="designer">
+          <div class="dg-tools">
+            <div class="lb">节点类型</div>
+            <div class="tool act">＋ 审批人</div>
+            <div class="tool">⑂ 条件分支</div>
+            <div class="tool">✉ 抄送人</div>
+            <div class="tool">▣ 结束</div>
+            <div class="lb" style="margin-top:14px">快捷</div>
+            <div class="tool">试运行</div>
+            <div class="tool">版本历史</div>
+          </div>
+          <div class="dg-canvas">
+            <div class="node start">开始 · 发起资产领用</div>
+            <div class="linkv"></div>
+            <div class="branch">
+              <div class="bt"><span>条件分支（按顺序匹配，命中即走）</span><span class="badge">2 条分支</span></div>
+              <div class="lane">
+                <div class="col">
+                  <div class="ch">分支 1：资产分类 ∈ 服务器/网络设备</div>
+                  <div class="mini"><b>审批人 · 部门主管</b><br><span class="muted">或签 · 超时 4h 催办</span></div>
+                  <div class="mini"><b>审批人 · 资产管理员</b><br><span class="muted">可改「配发设备」</span></div>
+                  <div class="mini"><b>审批人 · IT 主管</b><br><span class="muted">会签（与资产管理员共同确认）</span></div>
+                </div>
+                <div class="col">
+                  <div class="ch">分支 2：其他（默认）</div>
+                  <div class="mini"><b>审批人 · 部门主管</b><br><span class="muted">或签</span></div>
+                  <div class="mini"><b>审批人 · 资产管理员</b><br><span class="muted">通过后执行</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="linkv"></div>
+            <div class="node cc"><div class="nt">✉ 抄送人 <span class="badge">不阻塞</span></div><div class="ns">抄送：资产台账负责人、申请人直属主管</div></div>
+            <div class="linkv"></div>
+            <div class="node end">结束 · 自动绑定使用人并写履历</div>
+          </div>
+          <div class="dg-panel">
+            <div class="ph"><span>节点设置 · IT 主管审批</span><span class="muted small">节点 3/3</span></div>
+            <div class="fld-mk"><div class="fl">节点名称</div><div class="fv">IT 主管审批</div></div>
+            <div class="fld-mk"><div class="fl">审批人</div><div class="fv"><span class="chip">资产管理员</span><span class="chip">＋</span></div></div>
+            <div class="fld-mk"><div class="fl">多人审批方式</div><div class="seg"><span>或签</span><span class="on">会签</span><span>依次</span></div></div>
+            <div class="fld-mk"><div class="fl">审批人为空时</div><div class="fv">自动跳过并留痕</div></div>
+            <div class="fld-mk"><div class="fl">超时提醒</div><div class="fv">4 小时后催办，24 小时后升级</div></div>
+            <div class="fld-mk"><div class="fl">允许操作</div><div class="fv">转交 · 加签 · 退回发起人</div></div>
+            <div class="fld-mk"><div class="fl">字段权限</div><div class="fv"><span class="ph-t">只读（默认）</span></div></div>
+            <div class="fld-mk"><div class="fl">通知方式</div><div class="fv">站内 + 钉钉卡片（去审批）</div></div>
+          </div>
+        </div>
+      </div>
+      <p class="caption">设计器效果示意：分支内节点按顺序纵向排列，右侧面板即改即预览</p>
+    </section>
+
+    <section id="s7">
+      <h2><span class="n">07</span>条件分支配置（界面效果）</h2>
+      <p class="lead">点开分支，用「字段 + 运算符 + 值」拼条件；同一组内且/或二选一，混合逻辑用多分支表达。</p>
+      <div class="app-mock">
+        <div class="app-bar"><i></i><i></i><i></i><span style="margin-left:6px">分支 1 · 编辑条件</span></div>
+        <div style="padding:16px">
+          <div class="row-item" style="border:0;padding:0 0 10px">
+            <b style="font-size:13px">分支 1：服务器 / 网络设备领用</b>
+            <span class="sp"></span>
+            <span class="tag t-gray">优先级：分支顺序 1</span>
+          </div>
+          <div class="cond-row">
+            <div class="cell">资产分类</div><div class="cell">包含任一</div><div class="cell v">服务器、网络设备</div><div class="del">×</div>
+          </div>
+          <div class="and-or">且</div>
+          <div class="cond-row">
+            <div class="cell">设备是否在保</div><div class="cell">等于</div><div class="cell v">否</div><div class="del">×</div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
+            <button style="height:30px;padding:0 12px;border-radius:8px;border:1px dashed var(--brand);background:#fff;color:var(--brand);font-size:11.5px">＋ 添加条件</button>
+            <span class="muted small">组内关系：</span>
+            <div class="seg" style="width:110px"><span class="on">且</span><span>或</span></div>
+          </div>
+          <div class="note">提示：变量「设备是否在保」由保修到期日自动计算；「资产分类」多选值来自资产台账的分类字典（运行时可新增分类）。</div>
+        </div>
+      </div>
+      <p class="caption">条件行示意：左侧字段、中间运算符、右侧取值，行间用且/或连接</p>
+      <div class="grid2" style="margin-top:12px">
+        <div class="box"><b>为什么不做自由公式</b><p>像 <span class="mono">(A 且 B) 或 C</span> 这种嵌套，配置人容易写错、事后难排查。用「多分支 + 顺序」等价表达，且能直接在画布上看出优先级。</p></div>
+        <div class="box"><b>条件为空</b><p>不填条件的分支即「默认分支」，必须放在最后一条，否则保存时报错。</p></div>
+      </div>
+    </section>
+
+    <section id="s8">
+      <h2><span class="n">08</span>模板列表与绑定关系（界面效果）</h2>
+      <div class="app-mock">
+        <div class="app-bar"><i></i><i></i><i></i><span style="margin-left:6px">/#/admin/config?tab=approval</span></div>
+        <div style="padding:16px">
+          <div class="tabs-mk"><b>流程模板 <span class="tag t-brand">9</span></b><span>进行中实例</span><span>版本历史</span></div>
+          <div class="row-item"><span class="tag t-brand">领用</span><span>服务器 / 网络设备领用</span><span class="sp"></span><span class="flow-chip"><i></i>部门主管<span class="arrow-s">›</span>资产管理员<span class="arrow-s">›</span>IT 主管</span><span class="tag t-danger">P50</span><span class="tag t-ok">启用</span><span class="mono muted">v3</span></div>
+          <div class="row-item"><span class="tag t-brand">领用</span><span>默认领用流程</span><span class="sp"></span><span class="flow-chip"><i></i>部门主管<span class="arrow-s">›</span>资产管理员</span><span class="tag t-gray">P10</span><span class="tag t-ok">启用</span><span class="mono muted">v2</span></div>
+          <div class="row-item"><span class="tag t-brand">借用</span><span>长期借用（&gt;7 天）</span><span class="sp"></span><span class="flow-chip"><i></i>部门主管<span class="arrow-s">›</span>资产管理员</span><span class="tag t-warn">P30</span><span class="tag t-ok">启用</span><span class="mono muted">v1</span></div>
+          <div class="row-item"><span class="tag t-brand">借用</span><span>短期借用默认</span><span class="sp"></span><span class="flow-chip"><i></i>资产管理员</span><span class="tag t-gray">P10</span><span class="tag t-ok">启用</span><span class="mono muted">v1</span></div>
+          <div class="row-item"><span class="tag t-brand">更换</span><span>核心设备更换（指定资产）</span><span class="sp"></span><span class="flow-chip"><i></i>资产管理员<span class="arrow-s">›</span>IT 主管<span class="arrow-s">›</span>IT 经理</span><span class="tag t-danger">P100</span><span class="tag t-ok">启用</span><span class="mono muted">v4</span></div>
+          <div class="row-item"><span class="tag t-brand">归还</span><span>默认归还流程</span><span class="sp"></span><span class="flow-chip"><i></i>资产管理员</span><span class="tag t-gray">P10</span><span class="tag t-ok">启用</span><span class="mono muted">v1</span></div>
+          <div class="row-item" style="opacity:.6"><span class="tag t-brand">借用</span><span>会议室设备借用（试用）</span><span class="sp"></span><span class="flow-chip"><i></i>部门主管<span class="arrow-s">›</span>资产管理员</span><span class="tag t-warn">P30</span><span class="tag t-gray">草稿</span><span class="mono muted">v1</span></div>
+        </div>
+      </div>
+      <p class="caption">列表按业务分组，展示「适用范围 → 节点链 → 优先级 → 状态 → 版本」，草稿不影响线上</p>
+    </section>
+
+    <section id="s9">
+      <h2><span class="n">09</span>试运行与冲突检测</h2>
+      <p class="lead">发布前先「干跑」：拿一笔真实申请喂给引擎，看它命中哪条流程、每个节点解析成谁、预计多久走完。钉钉审批里叫「预览」，我们做成必走的一步。</p>
+      <div class="dryrun">
+        <div class="in">
+          <b style="font-size:12.5px">模拟输入</b>
+          <div class="kvline" style="margin-top:8px"><span>业务</span><b>资产领用</b></div>
+          <div class="kvline"><span>资产</span><b>HP DL380 服务器</b></div>
+          <div class="kvline"><span>分类</span><b>服务器</b></div>
+          <div class="kvline"><span>是否在保</span><b>否（2025-06 过保）</b></div>
+          <div class="kvline"><span>申请人</span><b>张伟 · A 1工段</b></div>
+          <div class="note" style="margin-top:10px">可选：从「最近提交的申请」里挑一笔，参数自动带出。</div>
+        </div>
+        <div class="out">
+          <div style="display:flex;align-items:center;gap:8px"><b style="font-size:12.5px">命中流程</b><span class="tag t-brand">服务器 / 网络设备领用 v3</span><span class="tag t-danger">P50</span></div>
+          <div class="small muted" style="margin-top:4px">匹配依据：资产分类 ∈ [服务器, 网络设备]，且 设备是否在保 = 否 → 分支 1</div>
+          <ul class="steps">
+            <li><span class="n">1</span><div><b>部门主管审批</b> · 李主管（A 1工段负责人）<br><span class="muted small">或签 · 4 小时未批将催办</span></div></li>
+            <li><span class="n">2</span><div><b>资产管理员审批</b> · 王敏（可修改配发设备编号）<br><span class="muted small">通过后进入会签</span></div></li>
+            <li><span class="n">3</span><div><b>IT 主管会签</b> · 邵昕炜、陈静（全部通过才行）<br><span class="muted small">任一驳回则整单结束</span></div></li>
+            <li><span class="n">4</span><div><b>抄送</b> · 资产台账负责人、申请人直属主管<br><span class="muted small">不阻塞流程</span></div></li>
+            <li><span class="n">✓</span><div><b>执行</b> · 绑定使用人、写资产履历、通知申请人</div></li>
+          </ul>
+          <div class="note">预计总时长：约 1.5 个工作日（按各节点历史平均处理时长估算）</div>
+        </div>
+      </div>
+      <h4>保存时的自动校验</h4>
+      <ul class="small">
+        <li>流程必须有且只有一个「结束」节点，且至少一个审批节点；</li>
+        <li>条件分支最后必须存在默认分支；字段类型与运算符不匹配（如文本用「大于」）直接报错；</li>
+        <li>同业务、同优先级的适用范围重叠 → 提示「可能冲突」，要求调整优先级；</li>
+        <li>引用了不存在的角色/部门 → 标黄提醒，允许保存但不能发布；</li>
+        <li>发布前强制试运行一次（可跳过，但会记录跳过人）。</li>
+      </ul>
+    </section>
+
+    <section id="s10">
+      <h2><span class="n">10</span>三个真实资产的配置示例</h2>
+      <p class="lead">同一套配置能力，落在不同资产上就是这个样子。</p>
+      <table>
+        <thead><tr><th style="width:180px">资产 / 场景</th><th style="width:250px">匹配条件</th><th>节点链</th><th style="width:130px">为什么这样配</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><b>联想 ThinkPad T14s</b><br><span class="muted small">普通办公笔记本 · 领用</span></td>
+            <td>业务=领用 且 分类=终端设备</td>
+            <td>部门主管 → 资产管理员</td>
+            <td>低值通用设备，两级足够</td>
+          </tr>
+          <tr>
+            <td><b>HP DL380 服务器</b><br><span class="muted small">机房核心设备 · 领用/更换</span></td>
+            <td>指定资产白名单 <span class="mono">IT-SRV-2024-0001</span></td>
+            <td>部门主管 → 资产管理员 → IT 主管（会签）</td>
+            <td>影响面大，负责人必须共同确认</td>
+          </tr>
+          <tr>
+            <td><b>罗技 Rally Bar</b><br><span class="muted small">会议室设备 · 借用 10 天</span></td>
+            <td>分类=会议室设备 且 借用天数 &gt; 7</td>
+            <td>部门主管 → 资产管理员 → 抄送 IT 服务台</td>
+            <td>长期占用公共设备，需部门知会</td>
+          </tr>
+          <tr>
+            <td><b>徕卡测距仪</b><br><span class="muted small">测量仪器（新分类）· 借用</span></td>
+            <td>业务=借用 且 分类=测量仪器</td>
+            <td>资产管理员 → IT 主管</td>
+            <td>新分类上线当天就能配，无需发版</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="box hl" style="margin-top:12px"><b>这就是「配得细」的价值</b>
+        <p>第 4 行是重点：测量仪器这类新资产，管理员在页面上新建一条流程、绑分类、选两个节点，保存发布即可；开发不需要介入。</p></div>
+    </section>
+
+    <section id="s11">
+      <h2><span class="n">11</span>版本、灰度与执行</h2>
+      <div class="grid2">
+        <div class="box"><b>版本快照</b><p>流程每次发布生成新版本（v1→v2）。提交时把「版本 + 节点链」快照写进实例，<b>新版本只影响之后提交的单</b>，在途单据按原版本跑完，与钉钉一致。</p></div>
+        <div class="box"><b>草稿与灰度</b><p>模板可存草稿不影响线上；可只对某部门/某人开启（灰度名单），先跑一周再全量。</p></div>
+        <div class="box"><b>停用与回滚</b><p>停用后不再匹配新单，在途继续；支持一键回滚到上一版本（保留审计记录）。</p></div>
+        <div class="box"><b>执行动作可配</b><p>末节点通过后执行什么：绑定使用人 / 回库置闲置 / 回收旧机并把未结工单转移到新机。沿用现有 <span class="mono">AssetRequestService</span> 的执行逻辑，配置只决定「走哪条链」。</p></div>
+      </div>
+      <h3>引擎执行流程（伪代码）</h3>
+      <pre class="mono" style="background:#fafbfc;border:1px solid var(--line);border-radius:12px;padding:14px;overflow:auto;font-size:11.5px;line-height:1.9">flow   = matchFlow(bizType, asset)          // 优先级 → 适用范围 → 条件
+branch = flow.branches.firstMatch(asset, request)
+nodes  = branch ? branch.nodes : flow.defaultNodes
+instance = saveSnapshot(flow.version, nodes)
+for node of nodes:
+    people = resolveApprovers(node, applicant, asset)   // 角色/主管/连续多级…
+    if people.isEmpty():
+        if node.emptyPolicy == SKIP: markSkipped(node); continue
+        if node.emptyPolicy == TO_ADMIN: people = admins();
+        else: reject("审批人为空")
+    createTasks(node, people, node.mode)                // 或签/会签/依次
+    notifyDingTalk(people, actionCard(url="/#/approvals/task/{id}"))</pre>
+    </section>
+
+    <section id="s12">
+      <h2><span class="n">12</span>数据模型（配置版）</h2>
+      <table>
+        <thead><tr><th style="width:230px">表</th><th>关键字段</th><th style="width:180px">说明</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">it_approval_flow</td><td>id, name, biz_type, scope_type(CATEGORY/ASSET/CONDITION/DEFAULT), scope_value(json), priority, status(DRAFT/ACTIVE/DISABLED), current_version</td><td>流程模板</td></tr>
+          <tr><td class="mono">it_approval_flow_version</td><td>id, flow_id, version, graph_json, published_by, published_at</td><td>每次发布一份完整图</td></tr>
+          <tr><td class="mono">it_approval_node</td><td>id, version_id, node_key, type(APPROVER/CC), name, seq, actor_type, actor_value, mode(ANY/ALL/SEQUENCE), empty_policy, timeout_hours, actions_json, field_perm_json</td><td>扁平存节点，便于查</td></tr>
+          <tr><td class="mono">it_approval_branch</td><td>id, version_id, seq, name, condition_json, is_default</td><td>条件分支</td></tr>
+          <tr><td class="mono">it_approval</td><td>id, biz_no, flow_id, version_id, branch_id, status, snapshot_json, current_node_key</td><td>实例（含快照）</td></tr>
+          <tr><td class="mono">it_approval_task</td><td>id, approval_id, node_key, assignee, status, action_at, opinion, remind_count</td><td>节点待办</td></tr>
+          <tr><td class="mono">it_approval_log</td><td>id, approval_id, action, actor, detail, created_at</td><td>配置变更与审批留痕</td></tr>
+        </tbody>
+      </table>
+      <p class="note"><span class="mono">graph_json</span> 存前端画布结构（节点坐标、连线），发布时同时展开成上面的扁平表供引擎执行，避免运行时解析画布。</p>
+    </section>
+
+    <section id="s13">
+      <h2><span class="n">13</span>与钉钉审批的能力对照</h2>
+      <table>
+        <thead><tr><th style="width:200px">钉钉审批</th><th style="width:120px">我们</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>表单设计器</td><td><span class="tag t-gray">不做</span></td><td>资产申请字段固定，沿用现有表单；条件变量直接读资产台账</td></tr>
+          <tr><td>流程节点 / 条件分支 / 抄送</td><td><span class="tag t-ok">做</span></td><td>画布式，与钉钉一致的交互范式</td></tr>
+          <tr><td>审批人 6 种类型</td><td><span class="tag t-ok">做</span></td><td>指定成员、部门主管、连续多级主管、角色、发起人自选 + 资产管理员</td></tr>
+          <tr><td>或签 / 会签 / 依次</td><td><span class="tag t-ok">做</span></td><td>节点级配置</td></tr>
+          <tr><td>并行分支（多分支同时跑）</td><td><span class="tag t-warn">P1</span></td><td>资产场景少见，先用手动会签替代</td></tr>
+          <tr><td>子流程 / 业务规则引擎</td><td><span class="tag t-gray">不做</span></td><td>避免复杂度失控</td></tr>
+          <tr><td>钉钉待办中心卡片内审批</td><td><span class="tag t-warn">P2</span></td><td>仍需公网回调，第一版走深链</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="s14">
+      <h2><span class="n">14</span>权限与审计</h2>
+      <table>
+        <thead><tr><th style="width:190px">权限</th><th style="width:150px">谁能有</th><th>能做什么</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">approval.flow.manage</td><td>管理员 / IT 主管</td><td>新建、编辑、发布、停用流程模板</td></tr>
+          <tr><td class="mono">approval.flow.view</td><td>IT / 部门负责人</td><td>查看流程配置与试运行结果（只读）</td></tr>
+          <tr><td class="mono">approval.task.handle</td><td>被指派节点人</td><td>审批自己名下的任务（转交/加签需节点开启）</td></tr>
+          <tr><td class="mono">approval.task.force</td><td>管理员</td><td>代审批并留痕（节点人离职/长期请假时兜底）</td></tr>
+        </tbody>
+      </table>
+      <p class="note">所有配置变更写 <span class="mono">it_approval_log</span>：谁、什么时候、把哪个节点从什么改成什么；代审批必须填原因并抄送原审批人。</p>
+    </section>
+
+    <section id="s15">
+      <h2><span class="n">15</span>分期与待确认</h2>
+      <table>
+        <thead><tr><th style="width:80px">阶段</th><th>范围</th><th style="width:280px">验收</th></tr></thead>
+        <tbody>
+          <tr><td><b>P0</b><br><span class="muted small">配置可用</span></td>
+            <td>模板 CRUD + 设计器（审批人/条件分支/抄送）+ 6 种审批人来源 + 或签会签 + 试运行 + 版本快照 + 引擎按链路执行 + 钉钉深链</td>
+            <td>管理员配一条「测量仪器借用」流程，保存发布后立即生效；提交一单能看到按配置走的节点人与钉钉卡片</td></tr>
+          <tr><td><b>P1</b><br><span class="muted small">运营增强</span></td>
+            <td>并行分支、连续多级主管 2 级以上、灰度名单、冲突可视化、审批时效统计</td>
+            <td>能按部门灰度一条新流程，统计出各节点平均耗时</td></tr>
+          <tr><td><b>P2</b><br><span class="muted small">体验</span></td>
+            <td>卡片内直接审批（回调）、批量审批、移动端设计器简化版</td>
+            <td>钉钉卡片上点「同意」即完成</td></tr>
+        </tbody>
+      </table>
+      <h3>需要你拍板</h3>
+      <table>
+        <thead><tr><th style="width:50px">#</th><th>问题</th><th style="width:330px">建议</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>谁能配流程？只给管理员，还是 IT 主管也能改？</td><td>管理员 + IT 主管可编辑，部门负责人只读</td></tr>
+          <tr><td>2</td><td>条件变量要不要一次做到位（含资产原值、数量）？</td><td>P0 只上现有字段；原值/数量待台账和表单扩展后追加</td></tr>
+          <tr><td>3</td><td>部门主管字段怎么来？</td><td>通讯录同步时从钉钉部门主管接口写入；没配则跳过该节点并留痕</td></tr>
+          <tr><td>4</td><td>「会签」用在哪些场景？</td><td>仅服务器/核心设备更换：资产管理员 + IT 主管共同确认</td></tr>
+          <tr><td>5</td><td>发布是否强制试运行？</td><td>建议强制，一次点击成本很低，能挡掉大量配错</td></tr>
+        </tbody>
+      </table>
+      <p class="note" style="margin-top:14px">确认后按 P0 开工：先做数据模型与引擎（可用接口 + 试运行验证），再做设计器页面，最后接钉钉卡片。</p>
+    </section>
+
+
+    <section id="s16">
+      <h2><span class="n">A</span>附录：能不能直接用钉钉审批？</h2>
+      <p class="lead">能，而且我们现有凭据已经够用——系统里已经是一个钉钉企业内部应用（corpId / appKey / appSecret / agentId 齐全），发起审批实例复用同一个 access_token，不需要新建应用。</p>
+
+      <div class="decision"><b>结论先说</b><br />
+      可行，且开发量比自研设计器小得多。但建议走<b>混合模式</b>：申请单还在我们系统填（资产选择、库存校验、防重复提交都在我们这），提交后由服务端去钉钉发起一条审批实例；审批人在钉钉审批里批，结果通过<b>定时轮询</b>同步回来，由我们执行资产动作。这样既拿到钉钉原生的待办与提醒，又不用把资产台账搬进钉钉表单。</div>
+
+      <h3>三条路，差别在「表单在哪、结果怎么回来」</h3>
+      <table>
+        <thead><tr><th style="width:150px">路线</th><th>做法</th><th style="width:170px">优点</th><th style="width:230px">代价</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><b>B1 纯钉钉审批</b></td>
+            <td>审批模板、表单全在钉钉审批后台建，员工直接在钉钉审批里发起。</td>
+            <td>零开发（只做结果同步）；管理员自助改流程</td>
+            <td>钉钉表单里<b>选不了我们的资产台账</b>（只能填编号字符串），库存校验、防重复提交、采购/维保全丢；报表要另做</td>
+          </tr>
+          <tr>
+            <td><b>B2 混合（推荐）</b></td>
+            <td>我们系统填单 → 服务端调「发起审批实例」把资产快照写进实例表单（只读文本字段）→ 钉钉里审批 → 轮询/订阅回写状态 → 我们执行资产动作</td>
+            <td>审批体验原生（待办、DING、审批中心统一）；开发集中在发起与同步两处</td>
+            <td>钉钉侧要建模板、给应用开审批权限；表单字段是钉钉的字段类型，展示受一定限制</td>
+          </tr>
+          <tr>
+            <td><b>B3 宜搭/低代码</b></td>
+            <td>用宜搭做表单与流程，我们的系统只做资产台账同步。</td>
+            <td>改表单不改代码</td>
+            <td>需宜搭授权与账号数；与台账双向同步更复杂，维护两套主数据</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>混合模式的链路</h3>
+      <div class="app-mock" style="padding:14px 10px;background:#fbfcfe">
+        <svg viewBox="0 0 1000 210" width="100%" role="img" aria-label="钉钉审批混合链路">
+          <defs><marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#b9c3d0"/></marker></defs>
+          <rect x="10" y="72" width="150" height="66" rx="13" fill="#eef4ff" stroke="#cfe0fa"/>
+          <text x="85" y="97" text-anchor="middle" font-size="12.5" font-weight="600" fill="#14488c">① 员工填单</text>
+          <text x="85" y="116" text-anchor="middle" font-size="10.5" fill="#5b7291">选设备 / 校验 / 防重复</text>
+
+          <rect x="192" y="72" width="160" height="66" rx="13" fill="#fff" stroke="#dfe4ec"/>
+          <text x="272" y="97" text-anchor="middle" font-size="12.5" font-weight="600">② 服务端发起</text>
+          <text x="272" y="116" text-anchor="middle" font-size="10.5" fill="#86868b">processInstances</text>
+
+          <rect x="384" y="72" width="180" height="66" rx="13" fill="#fff8ec" stroke="#f0d9a8"/>
+          <text x="474" y="97" text-anchor="middle" font-size="12.5" font-weight="600" fill="#8a5300">③ 钉钉审批流转</text>
+          <text x="474" y="116" text-anchor="middle" font-size="10.5" fill="#9a7433">主管 → 资产 → IT 主管</text>
+
+          <rect x="596" y="72" width="170" height="66" rx="13" fill="#fff" stroke="#dfe4ec"/>
+          <text x="681" y="97" text-anchor="middle" font-size="12.5" font-weight="600">④ 结果同步</text>
+          <text x="681" y="116" text-anchor="middle" font-size="10.5" fill="#86868b">轮询 1 分钟 / 事件订阅</text>
+
+          <rect x="798" y="72" width="190" height="66" rx="13" fill="#e9f7ef" stroke="#bfe6cf"/>
+          <text x="893" y="97" text-anchor="middle" font-size="12.5" font-weight="600" fill="#14663c">⑤ 我们执行资产动作</text>
+          <text x="893" y="116" text-anchor="middle" font-size="10.5" fill="#3d7a57">绑定使用人 / 履历 / 通知</text>
+
+          <path d="M160 105 H192" stroke="#b9c3d0" stroke-width="1.5" marker-end="url(#ar3)"/>
+          <path d="M352 105 H384" stroke="#b9c3d0" stroke-width="1.5" marker-end="url(#ar3)"/>
+          <path d="M564 105 H596" stroke="#b9c3d0" stroke-width="1.5" marker-end="url(#ar3)"/>
+          <path d="M766 105 H798" stroke="#b9c3d0" stroke-width="1.5" marker-end="url(#ar3)"/>
+
+          <path d="M681 138 V170 H272 V138" stroke="#7fb7f0" stroke-width="1.4" fill="none" stroke-dasharray="5 4"/>
+          <text x="476" y="188" text-anchor="middle" font-size="10.5" fill="#0b63c4">若审批被驳回/撤销：同步回写状态，通知申请人，资产不动</text>
+
+          <text x="85" y="168" text-anchor="middle" font-size="10" fill="#a1a1a6">实例 biz_no = 我们的申请单号</text>
+          <text x="85" y="184" text-anchor="middle" font-size="10" fill="#a1a1a6">（幂等键，防重复执行）</text>
+        </svg>
+      </div>
+
+      <h3>结果怎么回来：两条路，内网只能选一条</h3>
+      <table>
+        <thead><tr><th style="width:140px">方式</th><th>机制</th><th style="width:180px">时延</th><th style="width:260px">前提</th></tr></thead>
+        <tbody>
+          <tr><td><b>定时轮询</b></td><td>每 1–2 分钟拉一次「进行中实例」的状态，变了就回写并执行</td><td>1–2 分钟</td><td><b>只需出网、不需要公网入口</b>，内网部署可选</td></tr>
+          <tr><td><b>事件订阅</b></td><td>钉钉在审批状态变更时回调我们接口</td><td>秒级</td><td>回调地址必须公网可达 + 验签；内网需穿透或网关反代</td></tr>
+        </tbody>
+      </table>
+      <p class="note">建议先用轮询（量和延迟都能接受），将来有了公网入口再切订阅，业务代码不用改——两种方式都走同一个「实例状态同步」函数。</p>
+
+      <h3>A.1 如果用事件订阅，具体会是这样</h3>
+      <p class="lead">钉钉在审批状态变化时主动回调我们的接口，秒级知道结果。但它不是「把轮询换掉」，而是「在轮询前面加一条快车道」——兜底轮询仍然要留。</p>
+
+      <div class="app-mock" style="padding:14px 10px;background:#fbfcfe;margin-top:8px">
+        <svg viewBox="0 0 1000 230" width="100%" role="img" aria-label="事件订阅链路">
+          <defs><marker id="ar4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#b9c3d0"/></marker></defs>
+          <rect x="8" y="20" width="180" height="58" rx="12" fill="#fff8ec" stroke="#f0d9a8"/>
+          <text x="98" y="44" text-anchor="middle" font-size="12" font-weight="600" fill="#8a5300">钉钉审批通过/驳回</text>
+          <text x="98" y="62" text-anchor="middle" font-size="10" fill="#9a7433">产生状态变更事件</text>
+
+          <rect x="236" y="20" width="200" height="58" rx="12" fill="#eef4ff" stroke="#cfe0fa"/>
+          <text x="336" y="44" text-anchor="middle" font-size="12" font-weight="600" fill="#14488c">POST /api/dingtalk/event</text>
+          <text x="336" y="62" text-anchor="middle" font-size="10" fill="#5b7291">公网 HTTPS · 验签解密</text>
+
+          <rect x="484" y="20" width="190" height="58" rx="12" fill="#fff" stroke="#dfe4ec"/>
+          <text x="579" y="44" text-anchor="middle" font-size="12" font-weight="600">3 秒内回 success</text>
+          <text x="579" y="62" text-anchor="middle" font-size="10" fill="#86868b">入队，不同步执行业务</text>
+
+          <rect x="722" y="20" width="270" height="58" rx="12" fill="#e9f7ef" stroke="#bfe6cf"/>
+          <text x="857" y="44" text-anchor="middle" font-size="12" font-weight="600" fill="#14663c">异步：幂等 → 拉详情 → 执行</text>
+          <text x="857" y="62" text-anchor="middle" font-size="10" fill="#3d7a57">改资产 / 写履历 / 通知</text>
+
+          <path d="M188 49 H236" stroke="#b9c3d0" stroke-width="1.5" marker-end="url(#ar4)"/>
+          <path d="M436 49 H484" stroke="#b9c3d0" stroke-width="1.5" marker-end="url(#ar4)"/>
+          <path d="M674 49 H722" stroke="#b9c3d0" stroke-width="1.5" marker-end="url(#ar4)"/>
+
+          <rect x="236" y="140" width="200" height="52" rx="12" fill="#fff" stroke="#f3c7c2"/>
+          <text x="336" y="163" text-anchor="middle" font-size="11.5" font-weight="600" fill="#b3261e">验签 / 解密失败</text>
+          <text x="336" y="180" text-anchor="middle" font-size="10" fill="#a4503f">拒绝 + 告警，不入队</text>
+
+          <rect x="484" y="140" width="190" height="52" rx="12" fill="#fff" stroke="#dfe4ec"/>
+          <text x="579" y="163" text-anchor="middle" font-size="11.5" font-weight="600">重复 / 乱序事件</text>
+          <text x="579" y="180" text-anchor="middle" font-size="10" fill="#86868b">event_id 唯一索引丢弃</text>
+
+          <rect x="722" y="140" width="270" height="52" rx="12" fill="#fff6e6" stroke="#f0d9a8"/>
+          <text x="857" y="163" text-anchor="middle" font-size="11.5" font-weight="600" fill="#8a5300">兜底轮询（每 10 分钟）</text>
+          <text x="857" y="180" text-anchor="middle" font-size="10" fill="#9a7433">漏掉的事件由这里补</text>
+
+          <path d="M336 78 V140" stroke="#e0b1aa" stroke-width="1.3" stroke-dasharray="4 4" marker-end="url(#ar4)"/>
+        </svg>
+      </div>
+
+      <h4>必须先解决的 6 个问题（否则不建议上）</h4>
+      <table>
+        <thead><tr><th style="width:150px">问题</th><th>会发生什么</th><th style="width:300px">怎么处理</th></tr></thead>
+        <tbody>
+          <tr><td><b>公网入口</b></td><td>钉钉回调打不进内网，一条事件都收不到</td><td>服务器要有公网域名 + 443 证书（nginx 反代一个路径）；没有公网就用内网穿透，但穿透掉线＝事件全丢</td></tr>
+          <tr><td><b>3 秒超时</b></td><td>回调里同步跑业务（改资产、发通知）容易超时，钉钉判定失败并重试，事件堆叠</td><td>收到即入队、立刻返回 success，业务异步执行</td></tr>
+          <tr><td><b>事件重复 / 乱序</b></td><td>同一审批被处理两次 → 资产被绑定两次、履历写两条</td><td><span class="mono">it_dingtalk_event</span> 用 event_id 唯一索引；实例状态只允许前进（RUNNING→COMPLETED 不可回退）</td></tr>
+          <tr><td><b>加解密与验签</b></td><td>aes_key / token 配错，回调静默失败，日志里只有密文，很难查</td><td>写一个「本地自测脚本」用同样算法加密一条样例，联调前先跑通；密钥变更要有记录</td></tr>
+          <tr><td><b>事件信息不全</b></td><td>事件只给实例 id 与结果，没有审批意见、节点人</td><td>入队后再调一次「查询实例详情」补数据（一次出网调用），失败的进重试队列</td></tr>
+          <tr><td><b>安全面变大</b></td><td>一个无需登录的公网接口，可能被扫描与伪造请求</td><td>验签 + 时间戳窗口 + 限流 + 只接受钉钉事件格式；不返回业务数据</td></tr>
+        </tbody>
+      </table>
+
+      <h4>订阅 vs 轮询，怎么选</h4>
+      <table>
+        <thead><tr><th style="width:170px">维度</th><th style="width:300px">事件订阅</th><th>定时轮询</th></tr></thead>
+        <tbody>
+          <tr><td>回写时延</td><td><b>秒级</b>，员工几乎和审批人同时收到结果</td><td>1–2 分钟</td></tr>
+          <tr><td>公网要求</td><td><b>必须公网可达</b> + 证书</td><td>只需出网</td></tr>
+          <tr><td>可靠性</td><td>钉钉会重试，但仍有最终丢失可能 → 仍需兜底</td><td>只要服务在跑就不会漏</td></tr>
+          <tr><td>实现复杂度</td><td>验签、解密、幂等、异步队列、重试表</td><td>一个定时任务 + 幂等</td></tr>
+          <tr><td>接口限流影响</td><td>无（对方推我们）</td><td>有几毫秒级调用，量很小，基本不受限</td></tr>
+          <tr><td>运维/排障</td><td>要盯回调到达率、证书到期、穿透稳定性</td><td>看任务日志即可</td></tr>
+        </tbody>
+      </table>
+
+      <div class="decision"><b>工程上的正确做法：两条都要，订阅加速、轮询兜底。</b><br />
+      订阅把「审批通过 → 资产状态更新」压到秒级；每 10 分钟扫一次「钉钉仍 RUNNING 但本地记录了超过 5 分钟未同步」的实例，把漏掉的事件补回来。这样即使回调地址挂一天，数据也不会错，只是慢一点。</div>
+
+      <p class="note">落地顺序建议：<b>先轮询跑通闭环</b>（1 天内可验证），确认整套「发起 → 审批 → 回写 → 执行」正确之后，再把订阅接在同一个「实例状态同步」函数前面。这样即使订阅环境没准备好，功能也是可用的。</p>
+
+      <h3>和自研方案的真实差距</h3>
+      <table>
+        <thead><tr><th style="width:170px">维度</th><th style="width:230px">自研（本方案 01–15 节）</th><th>用钉钉审批</th></tr></thead>
+        <tbody>
+          <tr><td>审批体验</td><td>卡片深链跳 H5 再点通过</td><td><b>钉钉原生待办，在钉钉里直接批</b>，还能用 DING、审批中心</td></tr>
+          <tr><td>流程配置</td><td>我们做设计器，配置在系统内</td><td><b>钉钉审批后台配，管理员自助</b>，但受钉钉表单字段限制</td></tr>
+          <tr><td>资产选择</td><td><b>台账联动、库存实时校验</b></td><td>钉钉表单里选不了台账（B1 只能填编号；B2 由我们代填，体验保持一致）</td></tr>
+          <tr><td>审批中设备被抢</td><td>执行时二次校验，失败退回重选</td><td>钉钉不知道库存变化，只能靠我们执行时兜底（这点 B2 也一样）</td></tr>
+          <tr><td>权限体系</td><td>复用 request.approve / 新权限点</td><td>审批人由钉钉流程决定，需与我们权限做映射和核对</td></tr>
+          <tr><td>数据归属</td><td>全在我们库，报表随便做</td><td>仍需把实例结果落库，否则报表要跨系统取数</td></tr>
+          <tr><td>开发量（P0）</td><td>引擎 + 设计器 + 页面（较大）</td><td><b>发起 + 同步 + 页面改造（明显更小）</b></td></tr>
+          <tr><td>对外依赖</td><td>无</td><td>依赖钉钉管理员配模板、开审批权限；断网/接口限流要兜底</td></tr>
+        </tbody>
+      </table>
+
+      <h3>走钉钉需要准备的清单</h3>
+      <table>
+        <thead><tr><th style="width:60px">#</th><th style="width:260px">事项</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>开放平台给应用勾选「审批」权限</td><td>现有应用加权限点即可，不需要新建应用</td></tr>
+          <tr><td>2</td><td>钉钉管理员建 4 条审批模板</td><td>领用 / 借用 / 更换 / 归还，各返回一个 <span class="mono">processCode</span> 配到我们系统</td></tr>
+          <tr><td>3</td><td>确认模板里放哪些只读字段</td><td>建议：申请单号、资产编号/名称/分类/位置、申请人、事由、借用天数</td></tr>
+          <tr><td>4</td><td>字段映射表</td><td>我们字段 → 钉钉表单控件（文本/数字/日期），一次配好存库</td></tr>
+          <tr><td>5</td><td>同步任务</td><td>定时轮询实例状态；幂等键用申请单号，重复同步不重复执行</td></tr>
+          <tr><td>6</td><td>状态映射</td><td>钉钉 <span class="mono">RUNNING/COMPLETED/TERMINATED</span> → 我们 APPROVED/REJECTED/CANCELLED</td></tr>
+          <tr><td>7</td><td>兜底</td><td>钉钉接口失败：本地照常记 PENDING，重试队列 + 告警；钉钉故障时可切换「系统内审批」应急</td></tr>
+        </tbody>
+      </table>
+
+      <h3>我的建议</h3>
+      <div class="grid2">
+        <div class="box hl"><b>如果诉求是「审批集中到钉钉、管理员自己改流程、少写代码」</b>
+          <p>走 <b>B2 混合</b>：我们只做「发起 + 同步 + 执行」，设计器整块省掉。P0 工期明显缩短，且审批人不用学新页面。</p></div>
+        <div class="box"><b>如果「资产选择、库存一致、内网无外网、自定义报表」是硬约束</b>
+          <p>走 <b>自研</b>：所有逻辑闭环在我们库，审批在大屏/手机上都可做，代价是要自己做设计器与提醒链路。</p></div>
+      </div>
+      <p class="note" style="margin-top:12px">两者不冲突：<b>先把「审批实例 + 节点任务 + 状态同步」这套表建起来</b>，它是两条路的公共底座——自研引擎往里写，钉钉同步也往里写。以后想换，只换发起与同步适配层，页面和资产动作都不用动。</p>
+
+      <div class="decision"><b>下一步可选：先做 2 天技术验证（PoC）</b><br />
+      用现有应用凭据 + 一条测试审批模板，跑通「发起实例 → 钉钉里审批 → 轮询拉回结果」这条链，同时确认三件事：审批权限是否已开、模板能否由管理员建、轮询频率是否被限流。验证通过再定 P0 走哪条路，避免方案层面的空转。</div>
+    </section>
+  </main>
+</div>
+</body>
+</html>

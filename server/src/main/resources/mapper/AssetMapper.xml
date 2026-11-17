@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tzme.helpdesk.mapper.AssetMapper">
+
+  <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+    insert into it_asset(no,name,model,category,sn,user_name,location,buy_date,warranty,warranty_end,status,remark)
+    values(#{no},#{name},#{model},#{category},#{sn},#{userName},#{location},#{buyDate},#{warranty},#{warrantyEnd},#{status},#{remark})
+  </insert>
+
+  <select id="findByNo" resultType="com.tzme.helpdesk.domain.Asset">
+    select * from it_asset where no = #{no}
+  </select>
+
+  <update id="update">
+    update it_asset
+    <set>
+      <if test="name != null">name = #{name},</if>
+      <if test="model != null">model = #{model},</if>
+      <if test="category != null">category = #{category},</if>
+      <if test="sn != null">sn = #{sn},</if>
+      <if test="userName != null">user_name = #{userName},</if>
+      <if test="location != null">location = #{location},</if>
+      <if test="warranty != null">warranty = #{warranty},</if>
+      <if test="warrantyEnd != null">warranty_end = #{warrantyEnd},</if>
+      <if test="status != null">status = #{status},</if>
+      <if test="borrower != null">borrower = #{borrower},</if>
+      borrow_due = #{borrowDue},
+      <if test="remark != null">remark = #{remark},</if>
+      updated_at = now()
+    </set>
+    where no = #{no}
+  </update>
+
+  <sql id="filter">
+    <where>
+      <if test="status != null and status != ''">and status = #{status}</if>
+      <if test="category != null and category != ''">and category = #{category}</if>
+      <if test="keyword != null and keyword != ''">
+        and (no like concat('%', #{keyword}, '%') or name like concat('%', #{keyword}, '%')
+             or model like concat('%', #{keyword}, '%')
+             or sn like concat('%', #{keyword}, '%') or user_name like concat('%', #{keyword}, '%'))
+      </if>
+    </where>
+  </sql>
+
+  <sql id="sort">
+    order by
+      case status when '借出中' then 0 when '闲置' then 1 when '在用' then 2 when '维修中' then 3 else 4 end,
+      no
+  </sql>
+
+  <select id="list" resultType="com.tzme.helpdesk.domain.Asset">
+    select * from it_asset
+    <include refid="filter"/>
+    <include refid="sort"/>
+  </select>
+
+  <select id="page" resultType="com.tzme.helpdesk.domain.Asset">
+    select * from it_asset
+    <include refid="filter"/>
+    <include refid="sort"/>
+    limit #{offset}, #{size}
+  </select>
+
+  <select id="count" resultType="long">
+    select count(*) from it_asset
+    <include refid="filter"/>
+  </select>
+
+  <select id="countByStatus" resultType="long">
+    select count(*) from it_asset where status = #{status}
+  </select>
+
+  <select id="countAll" resultType="long">
+    select count(*) from it_asset
+  </select>
+</mapper>

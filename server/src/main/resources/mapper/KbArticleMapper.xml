@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tzme.helpdesk.mapper.KbArticleMapper">
+
+  <insert id="insertDraft" useGeneratedKeys="true" keyProperty="id">
+    insert into it_kb_article(title,category,summary,content,status,source_ticket_no,revision)
+    values(#{title},#{category},#{summary},#{content},'DRAFT',#{sourceTicketNo},0)
+  </insert>
+  <select id="findBySource" resultType="com.tzme.helpdesk.domain.KbArticle">
+    select * from it_kb_article where source_ticket_no=#{no}
+  </select>
+  <select id="lockById" resultType="com.tzme.helpdesk.domain.KbArticle">
+    select * from it_kb_article where id=#{id} for update
+  </select>
+  <sql id="managedFilter">
+    <where>
+      <if test="status != null and status != ''">status=#{status}</if>
+      <if test="keyword != null and keyword != ''">
+        and (title like concat('%',#{keyword},'%') or summary like concat('%',#{keyword},'%') or source_ticket_no like concat('%',#{keyword},'%'))
+      </if>
+    </where>
+  </sql>
+  <select id="managedList" resultType="com.tzme.helpdesk.domain.KbArticle">
+    select * from it_kb_article <include refid="managedFilter"/>
+    order by updated_at desc,id desc limit #{size} offset #{offset}
+  </select>
+  <select id="managedCount" resultType="long">
+    select count(*) from it_kb_article <include refid="managedFilter"/>
+  </select>
+  <update id="updateArticle">
+    update it_kb_article set title=#{title},category=#{category},summary=#{summary},content=#{content},
+      status=#{status},revision=revision+1,updated_at=now() where id=#{id} and revision=#{revision}
+  </update>
+
+  <select id="list" resultType="com.tzme.helpdesk.domain.KbArticle">
+    select id,title,category,summary,views,helpful,not_helpful,status,created_at,updated_at
+    from it_kb_article
+    <where>
+      status = 'PUBLISHED'
+      <if test="category != null and category != ''">and category = #{category}</if>
+      <if test="keyword != null and keyword != ''">
+        and (title like concat('%', #{keyword}, '%') or summary like concat('%', #{keyword}, '%'))
+      </if>
+    </where>
+    order by helpful desc, views desc
+    limit 50
+  </select>
+
+  <select id="findById" resultType="com.tzme.helpdesk.domain.KbArticle">
+    select * from it_kb_article where id = #{id}
+  </select>
+
+  <select id="recommend" resultType="com.tzme.helpdesk.domain.KbArticle">
+    select id,title,category,summary,views,helpful
+    from it_kb_article
+    where status = 'PUBLISHED'
+    <if test="category != null and category != ''">and category = #{category}</if>
+    <if test="keyword != null and keyword != ''">
+      and (title like concat('%', #{keyword}, '%') or summary like concat('%', #{keyword}, '%'))
+    </if>
+    order by helpful desc
+    limit 3
+  </select>
+
+  <update id="incViews">
+    update it_kb_article set views = views + 1 where id = #{id}
+  </update>
+
+  <update id="incHelpful">
+    update it_kb_article
+    set helpful = helpful + case when #{delta} &gt; 0 then 1 else 0 end,
+        not_helpful = not_helpful + case when #{delta} &lt; 0 then 1 else 0 end
+    where id = #{id}
+  </update>
+</mapper>

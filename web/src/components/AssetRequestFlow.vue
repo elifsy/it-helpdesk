@@ -1,0 +1,218 @@
+<script setup lang="ts">
+/**
+ * 资产申请流程（选设备 → 填事由 → 提交），员工首页与「资产服务」页共用。
+ * 外观与交互完全一致：外部只负责渲染四张 qcard 与调用 open(type)。
+ */
+import { computed, nextTick, onUnmounted, reactive, ref, watch } from 'vue'
+import { assetRequestApi } from '../api'
+import { useAuthStore } from '../stores/auth'
+import { eligibleAssets } from '../utils/assets'
+import { REQ_TYPE } from '../utils/dict'
+import { toast } from '../utils/toast'
+import AssetPicker from './AssetPicker.vue'
+
+const props = defineProps<{
+  assets: any[]
+  categories: { id: number; name: string }[]
+  loading?: boolean
+  reload?: () => Promise<any> | any
+  /** 本人已提交、仍待审批的设备编号：不可再次选择 */
+  pendingNos?: string[]
+}>()
+
+const emit = defineEmits<{ submitted: [no: string]; closed: [] }>()
+
+const auth = useAuthStore()
+const myName = computed(() => auth.user?.name || '')
+
+const pickType = ref('')
+const pickCategory = ref('')
+const pickNo = ref('')
+const showPick = ref(false)
+const showApply = ref(false)
+const submitting = ref(false)
+const pickerDialog = ref<HTMLElement>()
+let pickerOverflow: string | null = null
+const form = reactive({ reason: '', expectReturn: '' })
+
+const pickAssets = computed(() => eligibleAssets(props.assets, pickType.value, myName.value, '', props.pendingNos || []))
+const pickList = computed(() => eligibleAssets(props.assets, pickType.value, myName.value, pickCategory.value, props.pendingNos || []))
+const selectedAsset = computed(() => props.assets.find(a => a.no === pickNo.value))
+
+watch(pickList, list => { if (!list.some(a => a.no === pickNo.value)) pickNo.value = '' })
+watch(showPick, async open => {
+  if (open) {
+    pickerOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    await nextTick()
+    pickerDialog.value?.querySelector<HTMLButtonElement>('.picker-close')?.focus()
+  } else if (pickerOverflow !== null) {
+    document.body.style.overflow = pickerOverflow
+    pickerOverflow = null
+  }
+})
+onUnmounted(() => { if (pickerOverflow !== null) document.body.style.overflow = pickerOverflow })
+
+/** 打开申请流程；no 为已选设备编号（可空） */
+function open(type: string, no?: string) {
+  if (!auth.can('request.create') || !['RECEIVE', 'BORROW', 'REPLACE', 'RETURN'].includes(type)) return
+  if (no && (props.pendingNos || []).includes(no)) {
+    toast('该设备你已提交过申请，审批完成前不能重复提交')
+    return
+  }
+  const asset = props.assets.find(a => a.no === no)
+  pickType.value = type
+  pickCategory.value = asset?.category || ''
+  const list = eligibleAssets(props.assets, type, myName.value, pickCategory.value)
+  pickNo.value = list.some(a => a.no === no) ? no! : ''
+  form.reason = ''
+  form.expectReturn = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10)
+  showApply.value = false
+  showPick.value = true
+}
+
+function nextStep() {
+  if (!pickList.value.some(a => a.no === pickNo.value)) { toast('请先选择该分类下可申请的设备'); return }
+  showPick.value = false
+  showApply.value = true
+}
+
+async function reselect() {
+  await props.reload?.()
+  showApply.value = false
+  showPick.value = true
+}
+
+function closeFlow() {
+  if (submitting.value) return
+  showPick.value = false
+  showApply.value = false
+  emit('closed')
+}
+
+async function submitApply() {
+  const asset = selectedAsset.value
+  if (!asset || !pickList.value.some(a => a.no === asset.no)) { toast('请选择可申请的设备'); return }
+  if (form.reason.trim().length < 4) { toast('请填写申请事由（至少 4 个字）'); return }
+  if (pickType.value === 'BORROW' && !form.expectReturn) { toast('请选择归还日期'); return }
+  submitting.value = true
+  try {
+    const result = await assetRequestApi.create({
+      type: pickType.value,
+      assetNo: asset.no,
+      category: asset.category,
+      reason: form.reason,
+      expectReturn: pickType.value === 'BORROW' ? form.expectReturn : undefined
+    })
+    submitting.value = false
+    showPick.value = false
+    showApply.value = false
+    toast('已提交：' + result.no + '，等待审批')
+    emit('submitted', result.no)
+    emit('closed')
+    await props.reload?.()
+  } catch (e: any) {
+    toast(e.message)
+  } finally {
+    submitting.value = false
+  }
+}
+
+defineExpose({ open, close: closeFlow })
+</script>
+
+<template>
+  <!-- 选设备 -->
+  <div v-if="showPick" class="mask asset-picker-mask" @click.self="closeFlow" @keydown.esc="closeFlow">
+    <div ref="pickerDialog" class="dlg asset-selection-dialog" role="dialog" aria-modal="true" aria-labelledby="asset-selection-title">
+      <div class="dlg-h">
+        <div>
+          <h3 id="asset-selection-title">{{ REQ_TYPE[pickType].name }} · 选择设备</h3>
+          <p>{{ pickType === 'REPLACE' ? '选择自己名下需要更换的原设备' : pickType === 'RETURN' ? '选择自己借用中需要归还的设备' : '先选择左侧分类，再点击设备卡片' }}</p>
+        </div>
+        <button type="button" class="picker-close" aria-label="关闭设备选择" @click="closeFlow">×</button>
+      </div>
+      <div class="asset-selection-body">
+        <AssetPicker
+          v-model="pickNo"
+          v-model:category="pickCategory"
+          :assets="pickAssets"
+          :categories="categories"
+          :loading="!!loading"
+          :my-name="myName"
+          :category-label="pickType === 'REPLACE' ? '原设备分类' : '资产分类'"
+          :empty-text="'该分类下暂无可' + (pickType === 'RECEIVE' ? '领用' : pickType === 'BORROW' ? '借用' : pickType === 'REPLACE' ? '更换的本人' : '归还的本人') + '设备，可切换其他分类查看。'"
+        />
+      </div>
+      <div class="picker-help">{{ REQ_TYPE[pickType].desc }}，选择后填写申请事由，提交 IT 审批。</div>
+      <div class="dlg-f asset-selection-footer">
+        <div class="selection-summary">
+          <b>{{ pickNo ? selectedAsset?.name : '请选择一台设备' }}</b>
+          <span>{{ pickNo || '点击右侧卡片选择，选中后继续' }}</span>
+        </div>
+        <div class="picker-footer-actions">
+          <button class="btn" @click="closeFlow">取消</button>
+          <button class="btn pri" :disabled="loading || !pickNo || !pickList.length" @click="nextStep">下一步</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 申请表单 -->
+  <div v-if="showApply" class="mask" @click.self="closeFlow">
+    <div class="dlg">
+      <div class="dlg-h">{{ REQ_TYPE[pickType].name }} · 填写申请<span class="x" @click="closeFlow">×</span></div>
+      <div class="dlg-b">
+        <div class="card" style="background: #fafbfc; margin-bottom: 12px; box-shadow: none">
+          <b style="font-size: 13px">{{ selectedAsset?.name }} · {{ pickNo }}</b>
+          <div class="small muted" style="margin-top: 4px">资产分类：{{ selectedAsset?.category }}</div>
+          <button type="button" class="btn sm" style="margin-top: 8px" :disabled="submitting" @click="reselect">重新选择分类与设备</button>
+          <div class="small muted" style="margin-top: 4px">{{ REQ_TYPE[pickType].desc }}</div>
+        </div>
+        <div class="fld">
+          <label class="lb">申请事由<i>*</i></label>
+          <textarea v-model="form.reason" class="ta" placeholder="例：新岗位需要一台办公笔记本，申请领用。" />
+        </div>
+        <div v-if="pickType === 'BORROW'" class="fld" style="margin-bottom: 0">
+          <label class="lb">预计归还日期<i>*</i></label>
+          <input v-model="form.expectReturn" type="date" class="inp" />
+        </div>
+      </div>
+      <div class="dlg-f">
+        <button class="btn" :disabled="submitting" @click="closeFlow">取消</button>
+        <button class="btn pri" :disabled="submitting || !pickNo || !auth.can('request.create')" @click="submitApply">{{ submitting ? '提交中…' : '提交申请' }}</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.asset-selection-dialog { max-width:1000px; max-height:92vh; display:flex; flex-direction:column; overflow:hidden; }
+.asset-selection-dialog .dlg-h { flex-shrink:0; padding:18px 22px; }
+.dlg-h h3 { margin:0; font-size:16px; }
+.dlg-h p { margin:6px 0 0; color:var(--t3); font-size:11.5px; font-weight:400; }
+.picker-close { border:0; border-radius:8px; background:transparent; color:var(--t3); font-size:26px; width:32px; height:32px; cursor:pointer; }
+.picker-close:hover { color:var(--t1); background:#f2f4f7; }
+.asset-selection-body { min-height:0; overflow:auto; }
+.picker-help { flex-shrink:0; padding:12px 22px; background:#fafbfc; color:var(--t3); font-size:11.5px; line-height:1.7; border-top:1px solid var(--line2); }
+.asset-selection-footer { flex-shrink:0; align-items:center; justify-content:space-between; gap:16px; padding:15px 22px 18px; border-top:1px solid var(--line2); }
+.selection-summary { display:flex; flex-direction:column; gap:4px; min-width:0; }
+.selection-summary b { font-size:12px; color:var(--t2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.selection-summary span { font-size:10.5px; color:var(--t3); overflow-wrap:anywhere; }
+.picker-footer-actions { display:flex; gap:9px; flex-shrink:0; }
+.picker-footer-actions .btn { white-space:nowrap; }
+@media(max-width:600px) {
+  .asset-picker-mask { padding:10px; }
+  .asset-selection-dialog { max-height:94dvh; }
+  .asset-selection-dialog .dlg-h { padding:14px; }
+  .dlg-h h3 { font-size:14px; }
+  .dlg-h p { max-width:240px; font-size:10.5px; line-height:1.5; }
+  .picker-help { padding:10px 14px; font-size:10px; }
+  .asset-selection-footer { padding:12px 14px 14px; gap:10px; }
+  .selection-summary { max-width:calc(100% - 148px); }
+  .selection-summary b { font-size:11px; }
+  .selection-summary span { font-size:9px; }
+  .picker-footer-actions { gap:7px; }
+  .picker-footer-actions .btn { padding:0 14px; }
+}
+</style>

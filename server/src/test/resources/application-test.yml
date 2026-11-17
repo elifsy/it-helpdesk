@@ -1,0 +1,25 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:helpdesk-regression;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=10000
+    username: sa
+    password: ''
+    driver-class-name: org.h2.Driver
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/test-schema.sql
+      encoding: UTF-8
+helpdesk:
+  redis-enabled: false
+  dingtalk:
+    enabled: false
+  demo-user: 张伟
+  upload:
+    dir: ./target/regression-uploads
+logging:
+  level:
+    root: warn
+    org.springframework: warn
+    org.mybatis: warn
+    com.tzme.helpdesk: warn
+debug: false

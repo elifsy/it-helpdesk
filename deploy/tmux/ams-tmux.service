@@ -1,0 +1,14 @@
+[Unit]
+Description=Launch AMS frontend and backend inside tmux
+After=network-online.target mysql.service
+Wants=network-online.target mysql.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+ExecStart=/opt/ams/bin/start.sh
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
