@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tzme.helpdesk.common.BizException;
 import com.tzme.helpdesk.config.HelpdeskProperties;
+import com.tzme.helpdesk.dto.DutySettings;
 import com.tzme.helpdesk.dto.RuntimeSettings;
 import com.tzme.helpdesk.mapper.ManagementMapper;
 import lombok.RequiredArgsConstructor;
@@ -30,7 +31,7 @@ public class RuntimeSettingsService {
         defaults.setP1Hours(props.getSla().getP1Hours()); defaults.setP2Hours(props.getSla().getP2Hours());
         defaults.setP3Hours(props.getSla().getP3Hours()); defaults.setP4Hours(props.getSla().getP4Hours());
         defaults.setQrcodeBaseUrl(props.getQrcode().getBaseUrl());
-        return normalizeCategories(defaults);
+        return normalize(defaults);
     }
 
     @Transactional
@@ -39,6 +40,7 @@ public class RuntimeSettingsService {
         mapper.createSetting("runtime", write(get()));
         RuntimeSettings previous = read(mapper.lockSetting("runtime"));
         if (!previous.getRevision().equals(input.getRevision())) throw new BizException(409,"配置已被其他管理员修改，请刷新后重试");
+        if (input.getDuty() == null) input.setDuty(previous.getDuty());
         boolean legacyChanged = !Objects.equals(previous.getCategories(), input.getCategories());
         boolean typedChanged = input.getCategoriesByType() != null && !Objects.equals(previous.getCategoriesByType(), input.getCategoriesByType());
         if (legacyChanged || typedChanged) com.tzme.helpdesk.security.Permissions.require("dict.manage");
@@ -95,13 +97,14 @@ public class RuntimeSettingsService {
                     || new java.util.HashSet<>(children).size()!=children.size()) throw new BizException("分类名称需为 1–32 字，每个分类需有不重复的子分类");
         });
     }
-    private RuntimeSettings normalizeCategories(RuntimeSettings value) {
+    private RuntimeSettings normalize(RuntimeSettings value) {
+        if (value.getDuty() == null) value.setDuty(DutySettings.defaults());
         if (value.getCategoriesByType() == null) value.setCategoriesByType(TicketCategories.fromLegacy(value.getCategories()));
         value.setCategories(TicketCategories.merge(value.getCategoriesByType()));
         return value;
     }
     private RuntimeSettings read(String value) {
-        try { return normalizeCategories(json.readValue(value, RuntimeSettings.class)); }
+        try { return normalize(json.readValue(value, RuntimeSettings.class)); }
         catch (JsonProcessingException e) { throw new IllegalStateException("读取运行配置失败",e); }
     }
     private String write(RuntimeSettings value) {

@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 const DINGTALK_REQUIRED_KEYS = ['DINGTALK_CORP_ID', 'DINGTALK_APP_KEY', 'DINGTALK_APP_SECRET', 'DINGTALK_AGENT_ID']
-export const DINGTALK_KEYS = ['DINGTALK_ENABLED', ...DINGTALK_REQUIRED_KEYS, 'DINGTALK_BOOTSTRAP_ADMIN_USER_ID']
+export const DINGTALK_KEYS = ['DINGTALK_ENABLED', ...DINGTALK_REQUIRED_KEYS, 'DINGTALK_BOOTSTRAP_ADMIN_USER_ID', 'DINGTALK_DEMO_LOGIN']
 
 export function findRuntimeJar(root, stat = fs.statSync) {
   let selected = null, newest = -Infinity
@@ -77,7 +77,9 @@ export function backendEnvironment(cfg, inherited = process.env) {
 
 export function verifyLoginConfig(actual, cfg) {
   const enabled = cfg.DINGTALK_ENABLED === 'true'
-  if (typeof actual?.demoEnabled !== 'boolean' || actual.demoEnabled !== !enabled)
+  // DINGTALK_DEMO_LOGIN=true 时：钉钉接口照常走真实环境，登录仍可用演示账号（仅本地联调）
+  const expectDemo = !enabled || String(cfg.DINGTALK_DEMO_LOGIN || '').toLowerCase() === 'true'
+  if (typeof actual?.demoEnabled !== 'boolean' || actual.demoEnabled !== expectDemo)
     throw new Error('后端登录模式与 .env 不一致，请停止旧服务后重新启动项目')
   if (enabled && actual.corpId !== cfg.DINGTALK_CORP_ID)
     throw new Error('后端企业配置与 .env 不一致，请确认访问的是本次启动的服务')

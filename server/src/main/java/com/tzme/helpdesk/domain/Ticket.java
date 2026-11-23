@@ -47,4 +47,5 @@ public class Ticket {
     private Boolean overdue;
     /** 非表字段：同一 IT 的处理队列中排在本单之前的未完成工单数。未派单或已处理完成时为空。 */
     private Long queueAhead;
+    private Long pendingReportCount;
 }

@@ -613,3 +613,20 @@ body {
 .qcard > span:last-child {
   flex: 0 0 auto;
 }
+
+/* ------------------------------------------------------------------
+   设备卡片插图底色（按图标族配色）：AssetPicker、采购目录预览共用
+   ------------------------------------------------------------------ */
+.art-laptop,
+.art-desktop { background: linear-gradient(135deg, #f2f6fc, #e8f1fc); color: #7b9bc6; }
+.art-monitor,
+.art-projector { background: linear-gradient(135deg, #f8f3ec, #f4eade); color: #bd9b6a; }
+.art-keyboard,
+.art-mouse,
+.art-headset,
+.art-printer { background: linear-gradient(135deg, #f0f6f4, #e9f3ef); color: #71a995; }
+.art-server { background: linear-gradient(135deg, #f3f0fa, #edeafa); color: #9b86c5; }
+.art-network { background: linear-gradient(135deg, #eef6fa, #e7f2f7); color: #6a9fb9; }
+.art-phone,
+.art-tablet { background: linear-gradient(135deg, #eef4fd, #e4eefb); color: #6b93c8; }
+.art-generic { background: linear-gradient(135deg, #f4f5f7, #eceef1); color: #8f98a3; }

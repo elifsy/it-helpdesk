@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { adminApi, authApi, metaApi } from '../../api'
+import { adminApi, assetCategoryApi, authApi, metaApi, serviceContactApi, type ServiceContactMember, type ServiceContactPerson, type ServiceContactRoster } from '../../api'
+import ContactLeaveStatus from '../../components/ContactLeaveStatus.vue'
 import { useAuthStore } from '../../stores/auth'
 import { toast } from '../../utils/toast'
 import RolePermissions from './RolePermissions.vue'
@@ -14,6 +15,16 @@ const tab = computed(() => String(route.query.tab || ''))
 const canViewSection = computed(() => (CONFIG_PERMISSIONS[tab.value] || []).some(auth.can))
 const roleNames = ROLE_NAMES
 const settings = ref<any>(null)
+const contactRoster = ref<ServiceContactRoster>()
+const contactError = ref('')
+const contactLoading = ref(false)
+let contactLoadVersion = 0
+const binding = ref<number>()
+const contactKeyword = ref('')
+const contactPeople = ref<ServiceContactPerson[]>([])
+const searchedContacts = ref(false)
+const searchingContacts = ref(false)
+let bindingVersion = 0
 const categoryRows = ref<Record<string, { name: string; children: string }[]>>({})
 const categoryType = ref('INCIDENT')
 const currentCategoryRows = computed(() => categoryRows.value[categoryType.value] || [])
@@ -44,11 +55,90 @@ const dialog = ref<'' | 'user' | 'dept' | 'code'>('')
 const edit = reactive<any>({})
 let loadVersion = 0
 
+const handoverCats = ref<{ id: number; name: string }[]>([])
+const HANDOVER_TYPES = [
+  { v: 'RECEIVE', s: '资产领用', stage: '待领取' },
+  { v: 'BORROW', s: '资产借用', stage: '待领取' },
+  { v: 'REPLACE', s: '资产更换', stage: '先待归还旧机，再待领取新机' },
+  { v: 'RETURN', s: '归还设备', stage: '待归还' }
+]
+
+/** 某业务下某个分类是否勾选为「需要线下交接」 */
+function hasHandover(type: string, name: string) {
+  return (settings.value?.handoverCategories?.[type] || []).includes(name)
+}
+function toggleHandover(type: string, name: string) {
+  if (!auth.can('settings.manage')) return
+  if (!settings.value.handoverCategories) settings.value.handoverCategories = {}
+  const list: string[] = settings.value.handoverCategories[type] || []
+  settings.value.handoverCategories[type] = list.includes(name)
+    ? list.filter((x) => x !== name) : [...list, name]
+}
+
 function applySettings(value: any) {
+  if (value && !value.approvalProcessCodes) value.approvalProcessCodes = { RECEIVE: '', BORROW: '', REPLACE: '', RETURN: '' }
+  if (value && !value.handoverCategories) value.handoverCategories = { RECEIVE: [], BORROW: [], REPLACE: [], RETURN: [] }
   settings.value = value
   categoryRows.value = Object.fromEntries(TICKET_TYPES.map(type => [type.v,
     Object.entries(value.categoriesByType?.[type.v] || {}).map(([name, children]) => ({ name, children: (children as string[]).join('，') }))]))
   baseline.value = snapshot()
+}
+
+async function refreshContacts() {
+  const version = ++contactLoadVersion
+  contactLoading.value = true
+  contactError.value = ''
+  try {
+    const roster = await serviceContactApi.roster()
+    if (version === contactLoadVersion) contactRoster.value = roster
+  } catch (e: any) {
+    if (version === contactLoadVersion) contactError.value = e.message || '请假状态暂不可查'
+  } finally {
+    if (version === contactLoadVersion) contactLoading.value = false
+  }
+}
+
+function contactStatus(member: ServiceContactMember) {
+  return contactRoster.value?.contacts.find(contact => contact.member.name === member.name
+    && (contact.member.userId ?? null) === (member.userId ?? null))
+}
+
+function closeBinding() {
+  bindingVersion++
+  binding.value = undefined
+  searchingContacts.value = false
+  searchedContacts.value = false
+  contactPeople.value = []
+}
+
+function openBinding(index: number) {
+  closeBinding()
+  binding.value = index
+  contactKeyword.value = settings.value.duty.members[index].name
+  if (contactKeyword.value) void searchContacts()
+}
+
+async function searchContacts() {
+  const keyword = contactKeyword.value.trim()
+  if (!keyword || searchingContacts.value) return
+  const version = bindingVersion
+  searchingContacts.value = true
+  contactPeople.value = []
+  searchedContacts.value = false
+  try {
+    const matches = await serviceContactApi.people(keyword)
+    if (version === bindingVersion) {
+      contactPeople.value = matches
+      searchedContacts.value = true
+    }
+  } catch (e: any) { if (version === bindingVersion) toast(e.message) }
+  finally { if (version === bindingVersion) searchingContacts.value = false }
+}
+
+function bindContact(member: ServiceContactMember, person: ServiceContactPerson) {
+  member.name = person.name
+  member.userId = person.id
+  closeBinding()
 }
 async function loadUsers() {
   const r = await adminApi.users({ keyword: keyword.value, status: status.value, page: userPage.value })
@@ -75,7 +165,8 @@ async function loadSection() {
       const [d, e] = await Promise.all([adminApi.departments(), metaApi.engineers(), loadUsers()])
       departments.value = d
       engineers.value = e
-    } else if (section === 'depts') departments.value = auth.can('dept.manage') || auth.can('user.manage') ? await adminApi.departments() : []
+    } else if (section === 'duty') void refreshContacts()
+    else if (section === 'depts') departments.value = auth.can('dept.manage') || auth.can('user.manage') ? await adminApi.departments() : []
     else if (section === 'matrix') { /* 独立权限配置组件负责读取与保存 */ }
     else if (section === 'dict') {
       if (!settings.value.categories) applySettings({ ...settings.value, ...await adminApi.dictionary() })
@@ -90,6 +181,8 @@ async function saveSettings() {
   saving.value = true
   error.value = ''
   try {
+    if (settings.value.duty?.members.some((member: { position: string; name: string }) => !member.position || !member.name))
+      throw new Error('请填写每一行的岗位和人员姓名，或移除空白行')
     const categoriesByType: TicketCategoriesByType = Object.create(null)
     for (const type of TICKET_TYPES) {
       const cats: Record<string, string[]> = Object.create(null)
@@ -103,6 +196,7 @@ async function saveSettings() {
     if (auth.can('settings.manage')) applySettings(await adminApi.saveSettings({ ...settings.value, categoriesByType }))
     else applySettings({ ...settings.value, ...await adminApi.saveCategories({ revision: settings.value.revision, categoriesByType }) })
     window.dispatchEvent(new Event('admin-data-changed'))
+    if (tab.value === 'duty') void refreshContacts()
     toast('配置已保存，后续请求和任务将使用新配置')
   } catch (e: any) { error.value = e.message }
   finally { saving.value = false }
@@ -169,8 +263,11 @@ function deptName(id: number) { return departments.value.find(d => d.id === id)?
 function jobRun(key: string) { return jobs.value.runs?.find((r: any) => (r.jobKey || r.job_key) === key) }
 function formatBytes(bytes: number) { return bytes >= 1048576 ? (bytes / 1048576).toFixed(2) + ' MB' : Number(bytes || 0).toLocaleString() + ' B' }
 
-onMounted(loadSection)
-watch(tab, () => { dialog.value = ''; void loadSection() })
+onMounted(async () => {
+  await loadSection()
+  try { handoverCats.value = await assetCategoryApi.list() } catch { /* 无资产查看权限时忽略 */ }
+})
+watch(tab, () => { dialog.value = ''; closeBinding(); void loadSection() })
 </script>
 
 <template>
@@ -202,7 +299,84 @@ watch(tab, () => { dialog.value = ''; void loadSection() })
           <label class="field">统计缓存（秒，0 为关闭）<input v-model.number="settings.statsCacheSeconds" class="inp" type="number" min="0" max="300" /></label>
           <p class="hint">二维码基址需为员工手机可以访问的地址。当前配置版本：{{ settings.revision }}。</p>
         </section>
+        <section class="panel">
+          <div class="section-head"><h3>资产交接确认</h3></div>
+          <p class="hint" style="margin:0 0 12px">
+            勾选的分类：审批通过后先进入「待领取 / 待归还」，由 IT 或管理员在「资产申请」页确认交接，才真正改资产归属。
+            不勾选的分类保持原逻辑——审批通过即执行。
+          </p>
+          <div v-for="t in HANDOVER_TYPES" :key="t.v" class="handover-row">
+            <div class="hr-name">{{ t.s }}<small>{{ t.stage }}</small></div>
+            <div class="hr-cats">
+              <button v-for="c in handoverCats" :key="c.id" type="button" class="cat-chip"
+                :class="{ on: hasHandover(t.v, c.name) }" :disabled="!auth.can('settings.manage')"
+                @click="toggleHandover(t.v, c.name)">{{ c.name }}</button>
+              <span v-if="!handoverCats.length" class="small muted">暂无可选资产分类</span>
+            </div>
+          </div>
+          <p class="hint" style="margin:8px 0 0">一个都不勾＝该业务全部走「审批通过即执行」。</p>
+        </section>
+        <section class="panel">
+          <div class="section-head"><h3>钉钉审批</h3><router-link class="btn sm" to="/admin/ding-approval">去配置</router-link></div>
+          <p class="hint" style="margin:0">
+            四类资产操作各自的模板 processCode 与表单字段映射，已单独拆到「系统管理 → 钉钉审批」页面维护；
+            当前状态：{{ settings.approvalEnabled ? '已开启' : '未开启' }}{{ settings.approvalMock ? '（联调模式）' : '' }}。
+          </p>
+        </section>
       </template>
+
+      <section v-else-if="tab === 'duty' && settings.duty" class="panel duty-settings">
+        <div class="section-head">
+          <h3>IT 服务联系人</h3>
+          <div class="actions contact-actions">
+            <button class="btn sm" type="button" :disabled="contactLoading || saving" @click="refreshContacts">刷新状态</button>
+            <button class="btn sm" type="button" :disabled="saving || settings.duty.members.length >= 30"
+              @click="settings.duty.members.push({ position: '', name: '', userId: null })">添加联系人</button>
+          </div>
+        </div>
+        <p v-if="contactError" class="hint" role="status">{{ contactError }}</p>
+        <p v-if="!settings.duty.members.length" class="hint">暂无联系人。</p>
+        <div v-for="(member, index) in settings.duty.members" :key="index" class="duty-row">
+          <label class="field">岗位
+            <input v-model.trim="member.position" class="inp" maxlength="32" placeholder="例如 服务台" :disabled="saving" />
+          </label>
+          <label class="field">人员姓名
+            <input v-model.trim="member.name" class="inp" maxlength="64" :disabled="saving" @input="member.userId = null; closeBinding()" />
+          </label>
+          <div class="actions contact-actions">
+            <button class="btn sm" type="button" :disabled="saving" @click="binding === index ? closeBinding() : openBinding(index)">
+              {{ member.userId ? '更换关联' : '关联钉钉' }}
+            </button>
+            <button class="btn sm" type="button" :disabled="saving" :aria-label="`移除第 ${index + 1} 位联系人`"
+              @click="closeBinding(); settings.duty.members.splice(index, 1)">移除</button>
+          </div>
+          <div v-if="member.name" class="contact-status">
+            <ContactLeaveStatus v-if="contactStatus(member)" :contact="contactStatus(member)" />
+            <small v-else class="muted">{{ contactLoading ? '正在查询请假状态…' : '保存后查询请假状态' }}</small>
+          </div>
+          <div v-if="binding === index" class="contact-binding">
+            <form class="toolbar" @submit.prevent="searchContacts">
+              <input v-model="contactKeyword" class="inp" placeholder="姓名或工号" maxlength="64" aria-label="搜索钉钉通讯录" />
+              <button class="btn sm" :disabled="searchingContacts || saving || !contactKeyword.trim()">搜索</button>
+            </form>
+            <div v-if="contactPeople.length" class="actions contact-actions">
+              <button v-for="person in contactPeople" :key="person.id" class="btn sm" type="button" :disabled="saving" @click="bindContact(member, person)">
+                {{ [person.name, person.department, person.employeeNo].filter(Boolean).join(' · ') }}
+              </button>
+            </div>
+            <small v-else-if="searchedContacts" class="muted">没有匹配的钉钉通讯录人员。</small>
+          </div>
+        </div>
+        <div class="field-grid">
+          <label class="field">服务热线
+            <input v-model.trim="settings.duty.hotline" class="inp" type="tel" maxlength="48" :disabled="saving" />
+          </label>
+          <label class="field">热线说明
+            <input v-model.trim="settings.duty.hotlineNote" class="inp" maxlength="100" placeholder="选填" :disabled="saving" />
+          </label>
+        </div>
+        <p class="hint">工作台显示联系人和当天请假情况，服务热线同步显示在员工首页。重名人员可按部门或工号关联。</p>
+      </section>
 
       <section v-else-if="tab === 'users'" class="panel">
         <div class="section-head"><h3>用户与角色</h3><span class="muted">共 {{ userTotal }} 人</span></div>
@@ -344,6 +518,28 @@ watch(tab, () => { dialog.value = ''; void loadSection() })
 </template>
 
 <style scoped>
+.duty-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto; align-items:end; gap:10px; }
+.duty-row .field { margin:0; }
+.duty-row + .duty-row { margin-top:12px; }
+.duty-settings .section-head h3 { margin:0; }
+.contact-actions { flex-wrap:wrap; }
+.contact-status, .contact-binding { grid-column:1 / -1; }
+.contact-binding { padding:10px; background:#f6f8fb; border-radius:10px; }
+.contact-binding .toolbar { margin-bottom:6px; }
+@media (max-width:650px) { .duty-row { grid-template-columns:repeat(2,minmax(0,1fr)); }.duty-row > .contact-actions { grid-column:1 / -1; }.duty-settings .section-head { flex-wrap:wrap; } }
+.handover-row { display:flex; gap:14px; padding:10px 0; border-bottom:1px solid var(--line2); }
+.handover-row:last-of-type { border-bottom:0; }
+.hr-name { flex:0 0 96px; font-size:13px; font-weight:600; }
+.hr-name small { display:block; font-weight:400; font-size:10.5px; color:var(--t4); margin-top:2px; }
+.hr-cats { display:flex; flex-wrap:wrap; gap:7px; align-items:center; }
+.cat-chip { border:1px solid var(--line); background:#fff; color:var(--t2); border-radius:999px; padding:4px 12px; font-size:11.5px; cursor:pointer; }
+.cat-chip:hover { border-color:#94bff1; }
+.cat-chip.on { background:var(--brand-l); border-color:#b6d7fb; color:var(--brand); font-weight:600; }
+.cat-chip:disabled { opacity:.6; cursor:not-allowed; }
+
+.code-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px 14px; }
+.code-grid label { display:flex; flex-direction:column; gap:4px; font-size:11.5px; color:var(--t3); }
+@media (max-width:600px) { .code-grid { grid-template-columns:1fr; } }
 .page-head,.section-head,.toolbar,.save-bar,.pagination,.actions { display:flex; align-items:center; gap:10px; }
 .page-head,.section-head { justify-content:space-between; margin-bottom:16px; }
 h2 { font-size:26px; letter-spacing:-.03em; margin-bottom:5px; } h3 { font-size:16px; margin-bottom:12px; }

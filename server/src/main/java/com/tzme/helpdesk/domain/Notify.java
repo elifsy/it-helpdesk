@@ -8,6 +8,7 @@ import java.time.LocalDateTime;
 public class Notify {
     private Long id;
     private String toUser;
+    private Long recipientId;
     private String title;
     private String content;
     private String type;

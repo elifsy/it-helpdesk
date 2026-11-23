@@ -1,5 +1,6 @@
 delete from it_attachment;
 delete from it_notify;
+delete from it_missing_report;
 delete from it_ticket_record;
 delete from it_ticket_event;
 delete from it_ticket;
@@ -13,7 +14,7 @@ delete from sys_user;
 delete from sys_dept;
 delete from sys_audit_log;
 delete from sys_job_run;
-delete from sys_setting where setting_key in ('runtime','role-permissions','dingtalk-bootstrap-admin');
+delete from sys_setting where setting_key in ('runtime','role-permissions','dingtalk-bootstrap-admin','incoming-notifications');
 insert into sys_dept(id,name,parent_id) values(1,'技术中心',0),(2,'研发部',1);
 insert into sys_user(id,name,dept_id,dept_name,role,status) values
  (1,'张伟',1,'技术中心','USER','ACTIVE'),

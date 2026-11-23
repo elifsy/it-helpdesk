@@ -338,7 +338,7 @@ async function submitRate() {
         <div class="kv"><span>分类</span><b>{{ t.cat1 }} · {{ t.cat2 || '—' }}</b></div>        <div v-if="t.categoryNote" class="kv category-note"><span>分类补充</span><b>{{ t.categoryNote }}</b></div>
         <div class="kv"><span>类型</span><b>{{ TICKET_TYPE_NAME[t.type] || t.type }}</b></div>
         <div class="kv"><span>影响</span><b>{{ IMPACT_NAME[t.impact] }} · {{ WORK_NAME[t.workImpact] }}</b></div>
-        <div class="kv"><span>报修人</span><b>{{ t.creatorName }}（{{ t.deptName }}）</b></div>
+        <div class="kv"><span>报修人</span><b>{{ t.creatorName }}（{{ t.deptName }}）<span v-if="t.pendingReportCount" class="pill b-orange">{{ t.pendingReportCount }} 条待补报</span></b></div>
         <div class="kv"><span>故障位置</span><b class="ticket-location">{{ t.location || '—' }}</b></div>
         <div class="kv"><span>工程师</span><b>{{ t.assigneeName || '待接单' }}</b></div>
         <div class="kv"><span>提交</span><b>{{ t.createdAt }}</b></div>

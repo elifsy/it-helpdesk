@@ -25,7 +25,7 @@ public class AuthService {
 
     public LoginVO login(LoginReq req) {
         User u;
-        if (dingTalk.enabled()) {
+        if (dingTalk.enabled() && !props.getDingtalk().isDemoLogin()) {
             String dingUserId = dingTalk.getUserIdByCode(req.getAuthCode());
             u = userMapper.findByDingId(dingUserId);
             if (u == null) {

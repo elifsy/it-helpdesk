@@ -21,4 +21,7 @@ public class AssetRequestCreateReq {
 
     /** 借用时必填 */
     private LocalDate expectReturn;
+
+    /** 更换时可选：提交时预选替换设备（走钉钉审批时必须提供，因为审批端选不了台账） */
+    private String newAssetNo;
 }

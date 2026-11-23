@@ -3,8 +3,8 @@
 <mapper namespace="com.tzme.helpdesk.mapper.AssetMapper">
 
   <insert id="insert" useGeneratedKeys="true" keyProperty="id">
-    insert into it_asset(no,name,model,category,sn,user_name,location,buy_date,warranty,warranty_end,status,remark)
-    values(#{no},#{name},#{model},#{category},#{sn},#{userName},#{location},#{buyDate},#{warranty},#{warrantyEnd},#{status},#{remark})
+    insert into it_asset(no,erp_no,name,model,category,sn,user_name,location,buy_date,warranty,warranty_end,status,remark,icon)
+    values(#{no},#{erpNo},#{name},#{model},#{category},#{sn},#{userName},#{location},#{buyDate},#{warranty},#{warrantyEnd},#{status},#{remark},#{icon})
   </insert>
 
   <select id="findByNo" resultType="com.tzme.helpdesk.domain.Asset">
@@ -26,6 +26,7 @@
       <if test="borrower != null">borrower = #{borrower},</if>
       borrow_due = #{borrowDue},
       <if test="remark != null">remark = #{remark},</if>
+      <if test="icon != null">icon = #{icon},</if>
       updated_at = now()
     </set>
     where no = #{no}
@@ -36,7 +37,7 @@
       <if test="status != null and status != ''">and status = #{status}</if>
       <if test="category != null and category != ''">and category = #{category}</if>
       <if test="keyword != null and keyword != ''">
-        and (no like concat('%', #{keyword}, '%') or name like concat('%', #{keyword}, '%')
+        and (no like concat('%', #{keyword}, '%') or erp_no like concat('%', #{keyword}, '%') or name like concat('%', #{keyword}, '%')
              or model like concat('%', #{keyword}, '%')
              or sn like concat('%', #{keyword}, '%') or user_name like concat('%', #{keyword}, '%'))
       </if>

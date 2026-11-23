@@ -3,9 +3,15 @@ import { useAuthStore } from '../stores/auth'
 import { homeForRoles, routeAllowed } from '../config/menus'
 import { assetOperationPath, legacyAssetEntry, parseAssetNo } from '../utils/asset-links'
 import { navigationFailure, reloadRoute } from '../utils/navigation'
+import { ticketNotificationEntry } from '../utils/ticket-links'
 
-const legacyAsset = legacyAssetEntry(window.location.href)
-if (legacyAsset) window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search + '#' + legacyAsset)
+const notificationEntry = ticketNotificationEntry(window.location.href)
+if (notificationEntry) {
+  window.history.replaceState(window.history.state, '', notificationEntry)
+} else {
+  const legacyAsset = legacyAssetEntry(window.location.href)
+  if (legacyAsset) window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search + '#' + legacyAsset)
+}
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -16,6 +22,7 @@ const router = createRouter({
       children: [
         { path: '', redirect: '/home' },
         { path: 'home', component: () => import('../views/employee/Home.vue') },
+        { path: 'missing-reports', component: () => import('../views/MissingReports.vue') },
         { path: 'new', component: () => import('../views/employee/NewTicket.vue') },
         { path: 'tickets', component: () => import('../views/employee/MyTickets.vue') },
         { path: 'ticket/:no', component: () => import('../views/TicketDetail.vue') },
@@ -30,10 +37,14 @@ const router = createRouter({
         { path: '', redirect: '/admin/dashboard' },
         { path: 'dashboard', component: () => import('../views/admin/Dashboard.vue') },
         { path: 'tickets', component: () => import('../views/admin/TicketList.vue') },
+        { path: 'missing-reports', component: () => import('../views/MissingReports.vue') },
         { path: 'ticket/:no', component: () => import('../views/TicketDetail.vue') },
         { path: 'assets', component: () => import('../views/admin/AssetList.vue') },
         { path: 'assets/:no', component: () => import('../views/admin/AssetDetail.vue') },
         { path: 'approvals', component: () => import('../views/admin/Approvals.vue') },
+        { path: 'purchase', component: () => import('../views/admin/PurchaseAdmin.vue') },
+        { path: 'ding-approval', component: () => import('../views/admin/DingApproval.vue') },
+        { path: 'incoming-notifications', component: () => import('../views/admin/IncomingNotifications.vue') },
         { path: 'stats', component: () => import('../views/admin/Stats.vue') },
         { path: 'kb', component: () => import('../views/admin/KbAdmin.vue') },
         { path: 'config', component: () => import('../views/admin/Config.vue') }

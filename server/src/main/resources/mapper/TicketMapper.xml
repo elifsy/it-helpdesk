@@ -5,10 +5,10 @@
   <insert id="insert" useGeneratedKeys="true" keyProperty="id">
     insert into it_ticket(no,title,description,type,cat1,cat2,category_note,impact,work_impact,priority,status,
       asset_no,creator_id,creator_name,dept_name,location,assignee_id,assignee_name,source,
-      kb_hit,tried_kb,due_at)
+      kb_hit,tried_kb,due_at,finished_at,closed_at,solution_note)
     values(#{no},#{title},#{description},#{type},#{cat1},#{cat2},#{categoryNote},#{impact},#{workImpact},#{priority},
-      'NEW',#{assetNo},#{creatorId},#{creatorName},#{deptName},#{location},#{assigneeId},
-      #{assigneeName},#{source},#{kbHit},#{triedKb},#{dueAt})
+      coalesce(#{status},'NEW'),#{assetNo},#{creatorId},#{creatorName},#{deptName},#{location},#{assigneeId},
+      #{assigneeName},#{source},#{kbHit},#{triedKb},#{dueAt},#{finishedAt},#{closedAt},#{solutionNote})
   </insert>
 
   <select id="findByNo" resultType="com.tzme.helpdesk.domain.Ticket">
@@ -69,7 +69,9 @@
   </sql>
 
   <select id="list" resultType="com.tzme.helpdesk.domain.Ticket">
-    select * from it_ticket
+    select it_ticket.*, (select count(*) from it_missing_report m
+      where m.requester_id=it_ticket.creator_id and m.status='PENDING') as pending_report_count
+    from it_ticket
     <include refid="filter"/>
     order by
       case status
@@ -140,7 +142,8 @@
       coalesce(sum(case when status not in ('CLOSED','REJECTED','CANCELLED') and due_at is not null and due_at &lt; now() then 1 else 0 end),0) as `overdueCount`,
       coalesce(round(avg(case when rating &gt; 0 then rating end), 2),0) as `avgRating`,
       coalesce(sum(case when rating &gt; 0 then 1 else 0 end),0) as `ratedCount`,
-      coalesce(round(avg(case when finished_at is not null then timestampdiff(minute, created_at, finished_at) end), 0),0) as `avgMinutes`,
+      coalesce(round(avg(case when finished_at is not null and (source is null or source != '紧急处理补报')
+        then timestampdiff(minute, created_at, finished_at) end), 0),0) as `avgMinutes`,
       coalesce(sum(case when finished_at is not null and due_at is not null and finished_at &lt;= due_at then 1 else 0 end),0) as `slaOk`,
       coalesce(sum(case when finished_at is not null and due_at is not null then 1 else 0 end),0) as `slaTotal`,
       coalesce(sum(case when tried_kb = 1 then 1 else 0 end),0) as `triedKbCount`
@@ -166,7 +169,8 @@
   <select id="engineerRank" resultType="java.util.LinkedHashMap">
     select assignee_name as `name`, count(*) as `total`,
       coalesce(round(avg(case when rating &gt; 0 then rating end), 2), 0) as `rating`,
-      coalesce(round(avg(case when finished_at is not null then timestampdiff(minute, created_at, finished_at) end), 0), 0) as `avgMinutes`
+      coalesce(round(avg(case when finished_at is not null and (source is null or source != '紧急处理补报')
+        then timestampdiff(minute, created_at, finished_at) end), 0), 0) as `avgMinutes`
     from it_ticket
     where assignee_name is not null and assignee_name &lt;&gt; ''
       and created_at &gt;= #{since}

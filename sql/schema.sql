@@ -10,6 +10,7 @@ SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
 
 DROP TABLE IF EXISTS it_attachment;
+DROP TABLE IF EXISTS it_missing_report;
 DROP TABLE IF EXISTS it_notify;
 DROP TABLE IF EXISTS it_ticket_event;
 DROP TABLE IF EXISTS it_ticket_record;
@@ -65,6 +66,7 @@ CREATE TABLE sys_user (
 CREATE TABLE it_asset (
   id            BIGINT       NOT NULL AUTO_INCREMENT,
   no            VARCHAR(32)  NOT NULL COMMENT '资产编号，二维码内容载体',
+  erp_no        VARCHAR(32)  DEFAULT NULL COMMENT 'ERP资产编号',
   name          VARCHAR(128) NOT NULL,
   model         VARCHAR(128) DEFAULT NULL COMMENT '设备型号',
   category      VARCHAR(32)  NOT NULL COMMENT '终端设备/打印复印/网络设备/服务器/会议室/软件许可',
@@ -79,10 +81,12 @@ CREATE TABLE it_asset (
   borrower      VARCHAR(64)  DEFAULT NULL,
   borrow_due    DATE         DEFAULT NULL,
   remark        VARCHAR(255) DEFAULT NULL,
+  icon          VARCHAR(32)  DEFAULT NULL COMMENT '卡片图标 key，空=按分类与名称自动匹配',
   created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uk_asset_no (no),
+  UNIQUE KEY uk_asset_erp_no (erp_no),
   KEY idx_asset_status (status),
   KEY idx_asset_user (user_name)
 ) ENGINE=InnoDB COMMENT='IT 资产台账';
@@ -107,6 +111,7 @@ CREATE TABLE it_asset_request (
   type           VARCHAR(16)  NOT NULL COMMENT 'RECEIVE/BORROW/REPLACE/RETURN',
   asset_no       VARCHAR(32)  NOT NULL,
   applicant      VARCHAR(64)  NOT NULL,
+  applicant_id   BIGINT       DEFAULT NULL,
   dept           VARCHAR(64)  DEFAULT NULL,
   reason         VARCHAR(500) NOT NULL,
   expect_return  DATE         DEFAULT NULL,
@@ -116,6 +121,13 @@ CREATE TABLE it_asset_request (
   handled_at     DATETIME     DEFAULT NULL,
   new_asset_no   VARCHAR(32)  DEFAULT NULL,
   remark         VARCHAR(255) DEFAULT NULL,
+  ding_instance_id VARCHAR(64) DEFAULT NULL COMMENT '钉钉审批实例 id（轮询同步用）',
+  ding_status    VARCHAR(24)  DEFAULT NULL COMMENT 'RUNNING/COMPLETED/TERMINATED',
+  ding_synced_at DATETIME     DEFAULT NULL,
+  ding_message   VARCHAR(255) DEFAULT NULL COMMENT '钉钉审批结果摘要',
+  handover_status VARCHAR(16) DEFAULT NULL COMMENT 'PICKUP 待领取 / RETURN 待归还',
+  handover_by    VARCHAR(64)  DEFAULT NULL,
+  handover_at    DATETIME     DEFAULT NULL,
   created_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uk_ar_no (no),
@@ -253,6 +265,7 @@ CREATE TABLE it_solution_code (
 CREATE TABLE it_notify (
   id          BIGINT       NOT NULL AUTO_INCREMENT,
   to_user     VARCHAR(64)  NOT NULL,
+  recipient_id BIGINT      DEFAULT NULL,
   title       VARCHAR(120) NOT NULL,
   content     VARCHAR(500) DEFAULT NULL,
   type        VARCHAR(24)  NOT NULL DEFAULT 'TICKET' COMMENT 'TICKET/ASSET/SLA/SYSTEM',
@@ -260,7 +273,96 @@ CREATE TABLE it_notify (
   is_read     TINYINT      NOT NULL DEFAULT 0,
   created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_nt_user (to_user, is_read, created_at)
+  KEY idx_nt_user (to_user, is_read, created_at),
+  KEY idx_nt_recipient (recipient_id, is_read, id)
 ) ENGINE=InnoDB COMMENT='站内通知';
 
 SET FOREIGN_KEY_CHECKS = 1;
+
+-- ------------------------------------------------------------
+-- 设备购入申请（目录 + 申请单）
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS it_purchase_catalog (
+  id          BIGINT       NOT NULL AUTO_INCREMENT,
+  name        VARCHAR(120) NOT NULL COMMENT '设备名称 / 型号',
+  category    VARCHAR(64)  NOT NULL COMMENT '资产分类',
+  spec        VARCHAR(255) DEFAULT NULL COMMENT '规格说明',
+  remark      VARCHAR(255) DEFAULT NULL,
+  icon        VARCHAR(32)  DEFAULT NULL COMMENT '卡片图标 key，空=按分类自动匹配',
+  enabled     TINYINT      NOT NULL DEFAULT 1,
+  sort        INT          NOT NULL DEFAULT 0,
+  created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_pc_enabled (enabled, sort)
+) ENGINE=InnoDB COMMENT='可申请购买的设备目录';
+
+CREATE TABLE IF NOT EXISTS it_purchase_request (
+  id            BIGINT       NOT NULL AUTO_INCREMENT,
+  no            VARCHAR(32)  NOT NULL COMMENT 'PR-yyyyMMdd-0001',
+  catalog_id    BIGINT       DEFAULT NULL,
+  item_name     VARCHAR(120) NOT NULL COMMENT '申请购买的设备（快照）',
+  category      VARCHAR(64)  DEFAULT NULL,
+  applicant     VARCHAR(64)  NOT NULL,
+  applicant_id  BIGINT       DEFAULT NULL,
+  dept          VARCHAR(64)  DEFAULT NULL,
+  reason        VARCHAR(500) NOT NULL,
+  expect_date   DATE         DEFAULT NULL,
+  status        VARCHAR(16)  NOT NULL DEFAULT 'PENDING'
+                COMMENT 'PENDING/APPROVED/ORDERED/PENDING_PICKUP/COMPLETED/REJECTED/CANCELLED',
+  approver      VARCHAR(64)  DEFAULT NULL,
+  handled_at    DATETIME     DEFAULT NULL,
+  erp_no        VARCHAR(64)  DEFAULT NULL COMMENT 'ERP 采购单号',
+  ordered_at    DATETIME     DEFAULT NULL,
+  asset_no      VARCHAR(32)  DEFAULT NULL COMMENT '入库后选定并配发的资产',
+  handover_by   VARCHAR(64)  DEFAULT NULL,
+  handover_at   DATETIME     DEFAULT NULL,
+  remark        VARCHAR(255) DEFAULT NULL,
+  ding_instance_id VARCHAR(64) DEFAULT NULL COMMENT '钉钉审批实例 id（轮询同步用）',
+  ding_status   VARCHAR(24)  DEFAULT NULL COMMENT 'RUNNING/COMPLETED/TERMINATED',
+  ding_synced_at DATETIME    DEFAULT NULL,
+  ding_message  VARCHAR(255) DEFAULT NULL COMMENT '钉钉审批结果摘要',
+  created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_pr_no (no),
+  KEY idx_pr_status (status, created_at),
+  KEY idx_pr_applicant (applicant, created_at),
+  KEY idx_pr_asset (asset_no)
+) ENGINE=InnoDB COMMENT='设备购入申请';
+
+CREATE TABLE it_missing_report (
+  no VARCHAR(32) NOT NULL PRIMARY KEY,
+  requester_id BIGINT NOT NULL,
+  requester_name VARCHAR(64) NOT NULL,
+  recorded_by VARCHAR(64) NOT NULL,
+  title VARCHAR(200) NOT NULL,
+  description VARCHAR(500) NOT NULL,
+  channel VARCHAR(12) NOT NULL,
+  completed_at DATETIME NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+  ticket_no VARCHAR(32) DEFAULT NULL,
+  cancel_reason VARCHAR(500) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_missing_report_requester (requester_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS it_purchase_request_item (
+  id           BIGINT       NOT NULL AUTO_INCREMENT,
+  request_id   BIGINT       NOT NULL COMMENT '所属申请单',
+  catalog_id   BIGINT       DEFAULT NULL,
+  item_name    VARCHAR(120) NOT NULL COMMENT '设备名称（快照）',
+  category     VARCHAR(64)  DEFAULT NULL,
+  spec         VARCHAR(255) DEFAULT NULL,
+  status       VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
+               COMMENT 'PENDING 待处理 / ORDERED 已申请采购 / PENDING_PICKUP 待领取 / COMPLETED 已交付',
+  erp_no       VARCHAR(64)  DEFAULT NULL COMMENT '本行采购对应的 ERP 单号',
+  ordered_at   DATETIME     DEFAULT NULL,
+  asset_no     VARCHAR(32)  DEFAULT NULL COMMENT '配发的具体设备',
+  delivered_by VARCHAR(64)  DEFAULT NULL,
+  delivered_at DATETIME     DEFAULT NULL,
+  remark       VARCHAR(255) DEFAULT NULL,
+  created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_pri_request (request_id, id),
+  KEY idx_pri_status (status),
+  KEY idx_pri_asset (asset_no)
+) ENGINE=InnoDB COMMENT='设备购入申请明细（一行一台设备，可单独流转）';

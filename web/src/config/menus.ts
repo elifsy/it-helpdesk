@@ -2,7 +2,7 @@ export type WorkRole = 'emp' | 'it' | 'admin' | 'viewer'
 export const ROLE_NAMES: Record<string, string> = { USER: '普通用户', IT: 'IT', ADMIN: '管理员', VIEWER: '可查看用户' }
 export const CONFIG_PERMISSIONS: Record<string, string[]> = {
   '': ['settings.manage'], users: ['user.manage'], depts: ['dept.manage', 'contact.sync'], matrix: ['role.manage'],
-  sla: ['settings.manage'], dict: ['dict.manage'], audit: ['audit.view'], storage: ['settings.manage'], jobs: ['settings.manage']
+  duty: ['settings.manage'], sla: ['settings.manage'], dict: ['dict.manage'], audit: ['audit.view'], storage: ['settings.manage'], jobs: ['settings.manage']
 }
 export interface MenuItem { path: string; icon: string; label: string; badge?: 'pending' | 'approvals'; permission?: string }
 export interface MenuGroup { title: string; items: MenuItem[] }
@@ -19,10 +19,12 @@ export function roleFromRoles(roles: string[] = []): WorkRole {
   if (roles.includes('VIEWER')) return 'viewer'
   return 'emp'
 }
-export function routeAllowed(_roles: string[], fullPath: string, permissions: string[] = []): boolean {
+export function routeAllowed(roles: string[], fullPath: string, permissions: string[] = []): boolean {
   const [path, query = ''] = fullPath.split('?')
   const has = (...keys: string[]) => keys.some(key => permissions.includes(key))
   if (path === '/home' || path === '/') return true
+  if (path === '/missing-reports') return true
+  if (path === '/admin/missing-reports') return roles.includes('IT') || roles.includes('ADMIN')
   if (path.startsWith('/admin/config')) {
     const tab = new URLSearchParams(query).get('tab') || ''
     return !!CONFIG_PERMISSIONS[tab] && has(...CONFIG_PERMISSIONS[tab])
@@ -34,12 +36,14 @@ export function routeAllowed(_roles: string[], fullPath: string, permissions: st
   if (path.startsWith('/admin/ticket')) return has('ticket.view.all')
   if (path === '/admin/dashboard' || path === '/admin/stats') return has('stats.view')
   if (path === '/admin/approvals') return has('request.view.all')
+  if (path === '/admin/ding-approval' || path === '/admin/incoming-notifications') return has('settings.manage')
+  if (path === '/admin/purchase') return has('request.approve')
   if (path === '/admin/assets' || path.startsWith('/admin/assets/')) return has('asset.view')
   return false
 }
 export function homeForRoles(roles: string[] = [], permissions: string[] = []): string {
   const candidates = roles.includes('ADMIN')
-    ? ['/admin/dashboard', '/admin/tickets', '/admin/config', '/admin/assets', '/kb']
+    ? ['/admin/dashboard', '/admin/tickets', '/admin/config', '/admin/config?tab=matrix', '/admin/assets', '/kb']
     : roles.includes('VIEWER')
       ? ['/admin/tickets', '/admin/assets', '/admin/stats', '/kb']
     : roles.includes('IT')
@@ -50,11 +54,13 @@ export function homeForRoles(roles: string[] = [], permissions: string[] = []): 
 const business: MenuGroup[] = [
   { title: '服务台', items: [
     { path: '/admin/dashboard', icon: '▧', label: '工作台' },
-    { path: '/admin/tickets', icon: '▤', label: '工单中心' }
+    { path: '/admin/tickets', icon: '▤', label: '工单中心' },
+    { path: '/admin/missing-reports', icon: '▤', label: '紧急事项补报' }
   ] },
   { title: '资产与知识', items: [
     { path: '/admin/assets', icon: '▣', label: '资产台账' },
     { path: '/admin/approvals', icon: '⇄', label: '资产申请' },
+    { path: '/admin/purchase', icon: '＋', label: '采购管理', permission: 'request.approve' },
     { path: '/admin/stats', icon: '▧', label: '统计看板' }
   ] }
 ]
@@ -71,6 +77,9 @@ const management: MenuGroup[] = [
   ] },
   { title: '系统管理', items: [
     { path: '/admin/config', icon: '⚙', label: '运行配置' },
+    { path: '/admin/ding-approval', icon: '⇢', label: '钉钉审批', permission: 'settings.manage' },
+    { path: '/admin/incoming-notifications', icon: '♧', label: '通知接收人', permission: 'settings.manage' },
+    { path: '/admin/config?tab=duty', icon: '◷', label: 'IT 服务联系人' },
     { path: '/admin/config?tab=sla', icon: '◷', label: 'SLA 与优先级' },
     { path: '/admin/config?tab=dict', icon: '▤', label: '字典与分类' },
     { path: '/admin/config?tab=audit', icon: '≡', label: '审计日志' },
@@ -115,6 +124,7 @@ export const TABS: Record<WorkRole, MenuItem[]> = {
   ]
 }
 export function titleFor(role: WorkRole, fullPath: string): string {
+  if (fullPath === '/missing-reports') return '我的待补报事项'
   for (const group of MENUS[role]) for (const item of group.items) if (item.path === fullPath) return item.label
   if (fullPath.startsWith('/admin/tickets?')) return '工单中心'
   if (fullPath.startsWith('/admin/assets?')) return '资产台账'
@@ -122,7 +132,13 @@ export function titleFor(role: WorkRole, fullPath: string): string {
   if (fullPath.startsWith('/admin/assets/')) return '设备详情'
   return '服务平台'
 }
+/**
+ * 演示登录可切换的账号：必须是库里 ACTIVE 的真实账号，否则点击会报「账号不存在」。
+ * 普通成员测试固定用 谈帥宏 / 刘宇泽，其它账号不作为测试身份。
+ */
 export const DEMO_USERS = [
-  { name: '张伟', tag: '普通用户' }, { name: '王敏', tag: 'IT' },
-  { name: '李强', tag: 'IT' }, { name: '陈静', tag: '管理员' }, { name: '赵敏', tag: '可查看用户' }
+  { name: '谈帥宏', tag: '普通成员' },
+  { name: '刘宇泽', tag: '普通成员' },
+  { name: '林凤新', tag: 'IT' },
+  { name: '邵昕炜', tag: '管理员' }
 ]

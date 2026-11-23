@@ -34,6 +34,7 @@ public class AttachmentService {
 
     private static final Set<String> BIZ_TYPES = Set.of("TICKET", "ASSET", "REQUEST");
     private static final Set<String> ALLOWED_EXT = Set.of("jpg", "jpeg", "png", "gif", "webp", "pdf");
+    private static final Set<String> AUDIO_EXT = Set.of("mp3", "m4a", "wav");
 
     private final AttachmentMapper mapper;
     private final HelpdeskProperties props;
@@ -51,6 +52,14 @@ public class AttachmentService {
             throw new BizException("业务单号不合法");
         }
         access.check(bizType, bizNo, true);
+        return store(bizType, bizNo, file, user);
+    }
+
+    Attachment saveReportEvidence(String no, MultipartFile file) {
+        return store("MISSING_REPORT", no, file, CurrentUser.require());
+    }
+
+    private Attachment store(String bizType, String bizNo, MultipartFile file, LoginUser user) {
         if (mapper.countByBusiness(bizType, bizNo) >= settings.get().getMaxAttachments()) {
             throw new BizException("该业务的附件数量已达上限");
         }
@@ -63,8 +72,9 @@ public class AttachmentService {
         String original = StringUtils.cleanPath(
                 file.getOriginalFilename() == null ? "file" : file.getOriginalFilename());
         String ext = extOf(original);
-        if (!ALLOWED_EXT.contains(ext)) {
-            throw new BizException("只支持 jpg / png / gif / webp / pdf");
+        boolean evidence = "MISSING_REPORT".equals(bizType);
+        if (!ALLOWED_EXT.contains(ext) && !(evidence && AUDIO_EXT.contains(ext))) {
+            throw new BizException(evidence ? "证据须为图片、PDF、MP3、M4A 或 WAV" : "只支持 jpg / png / gif / webp / pdf");
         }
 
         String stored = UUID.randomUUID().toString().replace("-", "") + "." + ext;
@@ -144,6 +154,9 @@ public class AttachmentService {
             case "gif" -> "image/gif";
             case "webp" -> "image/webp";
             case "pdf" -> "application/pdf";
+            case "mp3" -> "audio/mpeg";
+            case "m4a" -> "audio/mp4";
+            case "wav" -> "audio/wav";
             default -> "image/jpeg";
         };
     }

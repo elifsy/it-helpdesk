@@ -3,8 +3,8 @@
 <mapper namespace="com.tzme.helpdesk.mapper.AssetRequestMapper">
 
   <insert id="insert" useGeneratedKeys="true" keyProperty="id">
-    insert into it_asset_request(no,type,asset_no,applicant,dept,reason,expect_return,status)
-    values(#{no},#{type},#{assetNo},#{applicant},#{dept},#{reason},#{expectReturn},'PENDING')
+    insert into it_asset_request(no,type,asset_no,applicant,applicant_id,dept,reason,expect_return,new_asset_no,status)
+    values(#{no},#{type},#{assetNo},#{applicant},#{applicantId},#{dept},#{reason},#{expectReturn},#{newAssetNo},'PENDING')
   </insert>
 
   <update id="update">
@@ -15,6 +15,13 @@
       <if test="handledAt != null">handled_at = #{handledAt},</if>
       <if test="newAssetNo != null">new_asset_no = #{newAssetNo},</if>
       <if test="remark != null">remark = #{remark},</if>
+      <if test="dingInstanceId != null">ding_instance_id = #{dingInstanceId},</if>
+      <if test="dingStatus != null">ding_status = #{dingStatus},</if>
+      <if test="dingSyncedAt != null">ding_synced_at = #{dingSyncedAt},</if>
+      <if test="dingMessage != null">ding_message = #{dingMessage},</if>
+      <if test="handoverStatus != null">handover_status = #{handoverStatus},</if>
+      <if test="handoverBy != null">handover_by = #{handoverBy},</if>
+      <if test="handoverAt != null">handover_at = #{handoverAt},</if>
     </set>
     where id = #{id}
   </update>
@@ -32,7 +39,10 @@
   </select>
 
   <select id="list" resultType="com.tzme.helpdesk.domain.AssetRequest">
-    select r.*, a.name as assetName, a.category as assetCategory
+    select r.*, a.name as assetName, a.category as assetCategory,
+      (select count(*) from it_missing_report m where m.status='PENDING' and m.requester_id =
+        coalesce(r.applicant_id, (select case when count(*)=1 then min(u.id) end from sys_user u where u.name=r.applicant)))
+      as pending_report_count
     from it_asset_request r left join it_asset a on a.no = r.asset_no
     <where>
       <if test="status != null and status != ''">and r.status = #{status}</if>

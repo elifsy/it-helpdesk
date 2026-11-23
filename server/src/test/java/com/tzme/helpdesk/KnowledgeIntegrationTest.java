@@ -37,7 +37,7 @@ class KnowledgeIntegrationTest {
     }
     JsonNode finish(String actor,String note) throws Exception {
         return body(mvc.perform(post("/tickets/IT-TEST-0001/finish").contentType("application/json")
-                .content(json.writeValueAsBytes(Map.of("code","RESTART","note",note))).header("Authorization","Bearer "+actor)));
+                .content(json.writeValueAsBytes(Map.of("cat1","终端","cat2","无法开机","note",note))).header("Authorization","Bearer "+actor)));
     }
     JsonNode confirm(String actor,boolean solved) throws Exception {
         return body(mvc.perform(post("/tickets/IT-TEST-0001/confirm").contentType("application/json")

@@ -65,6 +65,22 @@ export const REQ_STATUS_CLASS: Record<string, string> = {
   CANCELLED: 'b-gray'
 }
 
+/** 线下交接状态：审批通过后等 IT 确认，确认完才真正改资产 */
+export const HANDOVER_NAME: Record<string, string> = {
+  PICKUP: '待领取',
+  RETURN: '待归还'
+}
+export const HANDOVER_HINT: Record<string, string> = {
+  PICKUP: '审批已通过，请到 IT 服务台/备件库领取，IT 确认后完成',
+  RETURN: '审批已通过，请把设备交到 IT 服务台/备件库，IT 确认后完成'
+}
+/** 卡片上给 IT 的按钮文案（更换分两次） */
+export function handoverActionLabel(type: string, stage?: string | null) {
+  if (stage === 'RETURN') return type === 'REPLACE' ? '确认已归还旧机' : '确认已归还'
+  if (stage === 'PICKUP') return type === 'REPLACE' ? '确认已领取新机' : '确认已领取'
+  return '确认交接'
+}
+
 export const ASSET_STATUS_CLASS: Record<string, string> = {
   在用: 'b-blue',
   闲置: 'b-green',
@@ -72,7 +88,9 @@ export const ASSET_STATUS_CLASS: Record<string, string> = {
   维修中: 'b-purple',
   待入库: 'b-gray',
   待报废: 'b-red',
-  已报废: 'b-gray'
+  已报废: 'b-gray',
+  // 采购目录项在选择器里显示的虚拟状态
+  可申请: 'b-blue'
 }
 
 export const RECORD_KIND: Record<string, string> = {
@@ -97,4 +115,34 @@ export function remainText(minutes?: number | null) {
   }
   const h = Math.floor(minutes / 60)
   return h > 0 ? `剩余 ${h} 小时` : `剩余 ${minutes} 分钟`
+}
+
+/** 购入申请单状态 */
+export const PR_STATUS_NAME: Record<string, string> = {
+  PENDING: '待审批',
+  APPROVED: '已批准待处理',
+  COMPLETED: '已完成',
+  REJECTED: '已驳回',
+  CANCELLED: '已撤销'
+}
+export const PR_STATUS_CLASS: Record<string, string> = {
+  PENDING: 'b-orange',
+  APPROVED: 'b-blue',
+  COMPLETED: 'b-green',
+  REJECTED: 'b-red',
+  CANCELLED: 'b-gray'
+}
+
+/** 购入申请明细状态：一行一台设备，各自独立流转 */
+export const PR_ITEM_STATUS_NAME: Record<string, string> = {
+  PENDING: '待处理',
+  ORDERED: '已申请采购',
+  PENDING_PICKUP: '待领取',
+  COMPLETED: '已交付'
+}
+export const PR_ITEM_STATUS_CLASS: Record<string, string> = {
+  PENDING: 'b-gray',
+  ORDERED: 'b-blue',
+  PENDING_PICKUP: 'b-green',
+  COMPLETED: 'b-green'
 }

@@ -120,6 +120,7 @@ function search() {
             <td>
               <div style="font-weight: 600">{{ t.title }}</div>
               <div class="small muted">{{ t.creatorName }} · {{ t.deptName }}</div>
+              <span v-if="t.pendingReportCount" class="pill b-orange">{{ t.pendingReportCount }} 条待补报</span>
             </td>
             <td>{{ t.cat1 }}</td>
             <td><span class="pill" :class="'p' + t.priority[1].toLowerCase()">{{ t.priority }}</span></td>
@@ -140,6 +141,7 @@ function search() {
       <button v-for="ticket in rows" :key="ticket.no" class="ticket-card" :class="{ overdue: ticket.overdue }" @click="router.push(`/admin/ticket/${ticket.no}`)">
         <div class="card-line"><span class="mono">{{ ticket.no }}</span><span class="pill" :class="'p' + String(ticket.priority || 'P4').slice(-1)">{{ ticket.priority }}</span></div>
         <strong>{{ ticket.title }}</strong>
+        <span v-if="ticket.pendingReportCount" class="pill b-orange">{{ ticket.pendingReportCount }} 条待补报</span>
         <div class="card-line card-meta"><span>{{ ticket.creatorName }} · {{ ticket.cat1 }}</span><span>{{ statusName(ticket.status) }}</span></div>
         <div class="card-line card-meta"><span>工程师：{{ ticket.assigneeName || '待接单' }}</span><span :class="{ 'overdue-text': ticket.overdue }">{{ remainText(ticket.remainMinutes) || '查看详情 ›' }}</span></div>
       </button>

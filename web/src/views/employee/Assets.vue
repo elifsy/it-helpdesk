@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { assetApi, assetCategoryApi, assetRequestApi, type AssetCategory } from '../../api'
+import { assetApi, assetCategoryApi, assetRequestApi, purchaseApi, type AssetCategory } from '../../api'
 import { useAuthStore } from '../../stores/auth'
 import { assetActions, eligibleAssets } from '../../utils/assets'
-import { ASSET_STATUS_CLASS, REQ_STATUS_CLASS, REQ_STATUS_NAME, REQ_TYPE } from '../../utils/dict'
+import { ASSET_STATUS_CLASS, HANDOVER_HINT, HANDOVER_NAME, PR_ITEM_STATUS_CLASS, PR_ITEM_STATUS_NAME, PR_STATUS_CLASS, PR_STATUS_NAME, REQ_STATUS_CLASS, REQ_STATUS_NAME, REQ_TYPE } from '../../utils/dict'
 import { toast } from '../../utils/toast'
+import PurchaseFlow from '../../components/PurchaseFlow.vue'
 import AssetRequestFlow from '../../components/AssetRequestFlow.vue'
 
 const route = useRoute()
@@ -15,19 +16,75 @@ const assets = ref<any[]>([])
 const categories = ref<AssetCategory[]>([])
 const category = ref('')
 const requests = ref<any[]>([])
+const requestPageSize = 10
+const requestPage = ref(1)
+const requestPageCount = computed(() => Math.max(1, Math.ceil(requests.value.length / requestPageSize)))
+const pageRequests = computed(() =>
+  requests.value.slice((requestPage.value - 1) * requestPageSize, requestPage.value * requestPageSize))
+const requestSection = ref<HTMLDetailsElement>()
 const loading = ref(true)
 const detail = ref<any>(null)
 const deviceError = ref('')
 const flow = ref<InstanceType<typeof AssetRequestFlow>>()
 let deviceVersion = 0
+let loadVersion = 0
 const myName = computed(() => auth.user?.name || '')
 const filteredAssets = computed(() => assets.value.filter(a => !category.value || a.category === category.value))
 /** 本人待审批申请涉及的设备，选择设备时排除，避免重复提交 */
-const pendingNos = computed(() => requests.value.filter(r => r.status === 'PENDING').map(r => r.assetNo))
+const pendingNos = computed(() => requests.value
+  .filter(r => r.status !== 'COMPLETED' && r.status !== 'REJECTED' && r.status !== 'CANCELLED')
+  .map(r => r.assetNo))
 const quick = computed(() => (['RECEIVE', 'BORROW', 'REPLACE', 'RETURN'] as const).map(type => ({
   type, label: REQ_TYPE[type].name.replace('资产', ''), desc: REQ_TYPE[type].desc,
   count: eligibleAssets(assets.value, type, myName.value, category.value, pendingNos.value).length
 })))
+
+/* ------------------------------ 购入申请 ------------------------------ */
+/** 与「领用」同一套选择弹窗：选型号 → 填事由 → 提交 */
+const purchaseFlow = ref<InstanceType<typeof PurchaseFlow>>()
+const purchaseList = ref<any[]>([])
+const purchaseSection = ref<HTMLDetailsElement>()
+const purchaseLoading = ref(false)
+const purchaseError = ref('')
+let purchaseLoadVersion = 0
+const canReadRequests = computed(() => auth.can('request.view.own') || auth.can('request.view.all'))
+
+function openPurchase() {
+  purchaseFlow.value?.open()
+}
+
+async function cancelPurchase(row: any) {
+  if (!window.confirm('撤销这张购入申请？')) return
+  try { await purchaseApi.cancel(row.id); toast('已撤销'); await load() } catch (e: any) { toast(e.message) }
+}
+
+async function cancelRequest(id: number) {
+  try { await assetRequestApi.cancel(id); await load() } catch (e: any) { toast(e.message) }
+}
+
+function onRequestSubmitted() {
+  requestPage.value = 1
+  if (requestSection.value) requestSection.value.open = true
+}
+
+function onPurchaseSubmitted() {
+  if (purchaseSection.value) purchaseSection.value.open = true
+  void load()
+}
+
+async function loadPurchases() {
+  const version = ++purchaseLoadVersion
+  purchaseLoading.value = true
+  purchaseError.value = ''
+  try {
+    const list = await purchaseApi.list({ mine: true })
+    if (version === purchaseLoadVersion) purchaseList.value = list || []
+  } catch (e: any) {
+    if (version === purchaseLoadVersion) purchaseError.value = e.message || '购入申请加载失败'
+  } finally {
+    if (version === purchaseLoadVersion) purchaseLoading.value = false
+  }
+}
 
 onMounted(async () => {
   await load()
@@ -55,17 +112,21 @@ function detailActions() {
   return (detail.value?.actions || []).filter((t: string) => !(pending && t !== 'REPAIR'))
 }
 async function load() {
+  const version = ++loadVersion
   loading.value = true
+  if (canReadRequests.value) void loadPurchases()
   try {
     const [a, r, c] = await Promise.all([
       assetApi.list({}),
-      auth.can('request.view.own') || auth.can('request.view.all') ? assetRequestApi.list({ mine: true }) : Promise.resolve([]),
+      canReadRequests.value ? assetRequestApi.list({ mine: true }) : Promise.resolve([]),
       assetCategoryApi.list()
     ])
+    if (version !== loadVersion) return
     assets.value = a || []; requests.value = r || []; categories.value = c
+    requestPage.value = Math.min(requestPage.value, requestPageCount.value)
     if (category.value && !c.some(item => item.name === category.value)) category.value = ''
-  } catch (e: any) { toast(e.message) }
-  finally { loading.value = false }
+  } catch (e: any) { if (version === loadVersion) toast(e.message) }
+  finally { if (version === loadVersion) loading.value = false }
 }
 function openPick(type: string, no?: string) {
   if (!auth.can('request.create') || !['RECEIVE', 'BORROW', 'REPLACE', 'RETURN'].includes(type)) return
@@ -119,71 +180,154 @@ function closeDetail() {
         </div>
         <span style="color: var(--t4)">›</span>
       </div>
-    </div>
-
-    <div class="sec-t"><h3>我的申请</h3></div>
-    <div v-if="!requests.length" class="empty">还没有申请记录</div>
-    <div v-for="r in requests" :key="r.id" class="card" style="margin-bottom: 8px">
-      <div class="row">
-        <b style="font-size: 13px">{{ REQ_TYPE[r.type]?.name }}</b>
-        <span class="pill" :class="REQ_STATUS_CLASS[r.status]">{{ REQ_STATUS_NAME[r.status] }}</span>
-        <span class="sp" />
-        <span class="mono">{{ r.no }}</span>
-      </div>
-      <div class="small muted" style="margin-top: 6px; line-height: 1.7">
-        设备：{{ r.assetName || r.assetNo }}<span v-if="r.assetCategory"> · {{ r.assetCategory }}</span><br />
-        事由：{{ r.reason }}
-        <template v-if="r.expectReturn"><br />约定归还：{{ r.expectReturn }}</template>
-        <template v-if="r.newAssetNo"><br />替换新机：{{ r.newAssetNo }}</template>
-        <template v-if="r.remark"><br />{{ r.remark }}</template>
-      </div>
-      <div class="row" style="margin-top: 8px">
-        <span class="small muted">{{ r.createdAt }}</span>
-        <span class="sp" />
-        <button class="btn sm" @click="openDevice(r.assetNo)">查看设备</button>
-        <button
-          v-if="r.status === 'PENDING' && auth.can('request.create')"
-          class="btn sm danger"
-          @click="assetRequestApi.cancel(r.id).then(load)"
-        >
-          撤销
-        </button>
+      <div class="qcard purchase-card" aria-label="购入申请" @click="openPurchase">
+        <div class="qi">⊕</div>
+        <div class="sp">
+          <div class="qt">购入申请</div>
+          <div class="qm">没有合适的设备可领？申请采购一台新的</div>
+        </div>
+        <span style="color: var(--t4)">›</span>
       </div>
     </div>
 
-    <div class="sec-t">
-      <h3>设备清单 <span class="small muted" style="font-weight: 400">（{{ filteredAssets.length }} 台）</span></h3>
-    </div>
-    <div v-if="loading" class="empty">加载中…</div>
-    <div class="asset-list">
-      <div v-if="!loading && !filteredAssets.length" class="empty">该分类下暂无资产</div>
-      <div v-for="a in filteredAssets" :key="a.no" class="card" style="margin-bottom: 8px">
-        <div class="row">
-          <div class="sp">
-            <div style="font-size: 13.5px; font-weight: 600">{{ a.name }}</div>
-            <div class="mono" style="margin-top: 2px">{{ a.no }}</div>
+    <details ref="requestSection" class="service-section">
+      <summary class="service-summary">
+        <span>我的申请</span>
+        <span class="section-count">{{ requests.length }} 条</span>
+        <span class="section-chevron" aria-hidden="true"></span>
+      </summary>
+      <div class="section-content request-list">
+        <div v-if="loading && !requests.length" class="empty">加载中…</div>
+        <div v-else-if="!requests.length" class="empty">还没有申请记录</div>
+        <div v-for="r in pageRequests" :key="r.id" class="card">
+          <div class="row">
+            <b style="font-size: 13px">{{ REQ_TYPE[r.type]?.name }}</b>
+            <span class="pill" :class="REQ_STATUS_CLASS[r.status]">{{ REQ_STATUS_NAME[r.status] }}</span>
+            <span v-if="r.status === 'PENDING' && r.dingInstanceId" class="pill b-blue">钉钉审批中</span>
+            <span v-if="r.status === 'APPROVED' && r.handoverStatus" class="pill"
+              :class="r.handoverStatus === 'PICKUP' ? 'b-green' : 'b-orange'">{{ HANDOVER_NAME[r.handoverStatus] }}</span>
+            <span class="sp" />
+            <span class="mono">{{ r.no }}</span>
           </div>
-          <span v-if="pendingNos.includes(a.no)" class="pill b-orange">申请待审批</span>
-          <span class="pill" :class="ASSET_STATUS_CLASS[a.status] || 'b-gray'">{{ a.status }}</span>
+          <div class="small muted" style="margin-top: 6px; line-height: 1.7">
+            设备：{{ r.assetName || r.assetNo }}<span v-if="r.assetCategory"> · {{ r.assetCategory }}</span><br />
+            事由：{{ r.reason }}
+            <template v-if="r.expectReturn"><br />约定归还：{{ r.expectReturn }}</template>
+            <template v-if="r.newAssetNo"><br />替换新机：{{ r.newAssetNo }}</template>
+            <template v-if="r.status === 'APPROVED' && r.handoverStatus"><br />
+              <span style="color:var(--brand)">{{ HANDOVER_HINT[r.handoverStatus] }}</span>
+            </template>
+            <template v-if="r.dingInstanceId"><br />钉钉审批单：<span class="mono">{{ r.dingInstanceId }}</span><template v-if="r.dingMessage"> · {{ r.dingMessage }}</template></template>
+            <template v-if="r.remark"><br />{{ r.remark }}</template>
+          </div>
+          <div class="row" style="margin-top: 8px">
+            <span class="small muted">{{ r.createdAt }}</span>
+            <span class="sp" />
+            <button class="btn sm" @click="openDevice(r.assetNo)">查看设备</button>
+            <button
+              v-if="r.status === 'PENDING' && auth.can('request.create')"
+              class="btn sm danger"
+              @click="cancelRequest(r.id)"
+            >
+              撤销
+            </button>
+          </div>
         </div>
-        <div class="small muted" style="margin-top: 6px">
-          分类 {{ a.category }} · {{ a.userName ? `使用人 ${a.userName}` : '公用 / 未分配' }}
-          <template v-if="a.borrower"> · 借用人 {{ a.borrower }}</template>
-          · 位置 {{ a.location }}
+        <nav v-if="requestPageCount > 1" class="request-pager" aria-label="我的申请分页">
+          <button type="button" class="btn sm" :disabled="loading || requestPage <= 1" @click="requestPage--">上一页</button>
+          <span class="small muted" aria-live="polite">{{ requestPage }} / {{ requestPageCount }}</span>
+          <button type="button" class="btn sm" :disabled="loading || requestPage >= requestPageCount" @click="requestPage++">下一页</button>
+        </nav>
+      </div>
+    </details>
+
+    <details ref="purchaseSection" class="service-section">
+      <summary class="service-summary">
+        <span>购入申请</span>
+        <span class="section-count">{{ purchaseList.length }} 条</span>
+        <span class="section-chevron" aria-hidden="true"></span>
+      </summary>
+      <div class="section-content purchase-list">
+        <div v-if="purchaseLoading && !purchaseList.length" class="empty">加载中…</div>
+        <div v-else-if="purchaseError" class="empty" role="alert">
+          {{ purchaseError }}
+          <button type="button" class="btn sm" @click="loadPurchases">重新加载</button>
         </div>
-        <div class="row" style="flex-wrap: wrap; margin-top: 8px; gap: 6px">
-          <button
-            v-for="t in actionsOf(a).filter((x) => x !== 'REPAIR')"
-            :key="t"
-            class="btn sm"
-            @click="applyFor(t, a.no)"
-          >
-            {{ REQ_TYPE[t].name }}
-          </button>
-          <button class="btn sm" @click="openDevice(a.no)">详情</button>
+        <div v-else-if="!purchaseList.length" class="empty">还没有购入申请</div>
+        <div v-for="p in purchaseList" :key="p.id" class="card">
+          <div class="row">
+            <b style="font-size: 13px">{{ p.itemSummary || p.itemName }}</b>
+            <span class="pill" :class="PR_STATUS_CLASS[p.status]">{{ PR_STATUS_NAME[p.status] }}</span>
+            <span v-if="p.status === 'APPROVED'" class="pill b-gray">已交付 {{ p.doneCount }}/{{ p.itemCount }}</span>
+            <span class="sp" />
+            <span class="mono">{{ p.no }}</span>
+          </div>
+          <div class="small muted" style="margin-top: 6px; line-height: 1.7">
+            事由：{{ p.reason }}
+            <template v-if="p.remark"><br />{{ p.remark }}</template>
+          </div>
+          <div class="pr-items">
+            <div v-for="(it, idx) in p.items" :key="it.id" class="pr-item">
+              <span class="pri-idx">{{ idx + 1 }}</span>
+              <span class="pri-name">{{ it.itemName }}</span>
+              <span class="pill" :class="PR_ITEM_STATUS_CLASS[it.status]">{{ PR_ITEM_STATUS_NAME[it.status] }}</span>
+              <span v-if="it.status === 'ORDERED' && it.erpNo" class="small muted">ERP <span class="mono">{{ it.erpNo }}</span></span>
+              <span v-if="it.status === 'PENDING_PICKUP'" class="small muted">待领取 <span class="mono">{{ it.assetNo }}</span></span>
+              <span v-if="it.status === 'COMPLETED'" class="small muted"><span class="mono">{{ it.assetNo }}</span> · {{ it.deliveredAt }}</span>
+            </div>
+          </div>
+          <div v-if="p.items?.some((i: any) => i.status === 'PENDING_PICKUP')" class="small" style="margin-top: 6px; color: var(--brand)">
+            有设备已备好，请到 IT 服务台领取；每台可单独领取。
+          </div>
+          <div class="row" style="margin-top: 8px">
+            <span class="small muted">{{ p.createdAt }}</span>
+            <span class="sp" />
+            <button v-if="p.status === 'PENDING'" class="btn sm danger" @click="cancelPurchase(p)">撤销</button>
+          </div>
         </div>
       </div>
-    </div>
+    </details>
+
+    <details class="service-section">
+      <summary class="service-summary">
+        <span>设备清单</span>
+        <span class="section-count">{{ filteredAssets.length }} 台</span>
+        <span class="section-chevron" aria-hidden="true"></span>
+      </summary>
+      <div class="section-content">
+        <div v-if="loading && !filteredAssets.length" class="empty">加载中…</div>
+        <div v-else-if="!filteredAssets.length" class="empty">该分类下暂无资产</div>
+        <div v-else class="asset-list">
+          <div v-for="a in filteredAssets" :key="a.no" class="card">
+            <div class="card-head">
+              <div class="ch-title">{{ a.name }}</div>
+              <div class="ch-meta">
+                <span class="mono">{{ a.no }}</span>
+                <span v-if="pendingNos.includes(a.no)" class="pill b-orange">申请待审批</span>
+                <span v-else-if="a.reservedBy" class="pill b-orange">待领取 · {{ a.reservedBy }}</span>
+                <span class="pill" :class="ASSET_STATUS_CLASS[a.status] || 'b-gray'">{{ a.status }}</span>
+              </div>
+            </div>
+            <div class="small muted" style="margin-top: 6px">
+              分类 {{ a.category }} · {{ a.userName ? `使用人 ${a.userName}` : '公用 / 未分配' }}
+              <template v-if="a.borrower"> · 借用人 {{ a.borrower }}</template>
+              · 位置 {{ a.location }}
+            </div>
+            <div class="row" style="flex-wrap: wrap; margin-top: 8px; gap: 6px">
+              <button
+                v-for="t in actionsOf(a).filter((x) => x !== 'REPAIR')"
+                :key="t"
+                class="btn sm"
+                @click="applyFor(t, a.no)"
+              >
+                {{ REQ_TYPE[t].name }}
+              </button>
+              <button class="btn sm" @click="openDevice(a.no)">详情</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </details>
 
     <!-- 选设备 / 申请表单：与员工首页共用同一套流程 -->
     <AssetRequestFlow
@@ -193,7 +337,7 @@ function closeDetail() {
       :loading="loading"
       :reload="load"
       :pending-nos="pendingNos"
-      @submitted="load"
+      @submitted="onRequestSubmitted"
       @closed="onFlowClosed"
     />
 
@@ -234,9 +378,62 @@ function closeDetail() {
       </div>
     </div>
   </div>
+  <PurchaseFlow ref="purchaseFlow" @submitted="onPurchaseSubmitted" />
 </template>
 
 <style scoped>
+
+.service-section { margin-top: 12px; min-width: 0; }
+.service-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 10px 14px;
+  border: 1px solid var(--line2);
+  border-radius: 12px;
+  background: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+.service-summary::-webkit-details-marker { display: none; }
+.service-summary:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.section-count { color: var(--t3); font-size: 12px; font-weight: 400; }
+.section-chevron {
+  width: 8px;
+  height: 8px;
+  margin-left: auto;
+  margin-right: 3px;
+  border-right: 2px solid var(--t3);
+  border-bottom: 2px solid var(--t3);
+  transform: translateY(-2px) rotate(45deg);
+}
+.service-section[open] > .service-summary .section-chevron { transform: translateY(2px) rotate(225deg); }
+.section-content { margin-top: 8px; }
+.request-list, .purchase-list, .asset-list { display: grid; gap: 8px; }
+.request-list .card, .purchase-list .card, .asset-list .card { margin: 0; min-width: 0; }
+.request-list .card .row, .purchase-list .card .row { flex-wrap: wrap; }
+.request-pager { display: flex; justify-content: center; align-items: center; gap: 12px; padding: 4px 0; }
+
+.pr-items { margin-top:8px; border:1px solid var(--line2); border-radius:10px; overflow:hidden; }
+.pr-item { display:flex; align-items:center; gap:7px; padding:8px 10px; border-bottom:1px solid var(--line2); font-size:11.5px; }
+.pr-item:last-child { border-bottom:0; }
+.pri-idx { flex:0 0 17px; height:17px; border-radius:4px; background:#eef2f7; color:var(--t3); font-size:10px; display:grid; place-items:center; }
+.pri-name { flex:1; min-width:0; overflow-wrap:anywhere; color:var(--t2); }
+
+/* 购入申请：与首页一致，整行横跨的补充入口 */
+.purchase-card { grid-column: 1 / -1; border: 1px dashed #cfd9e6; box-shadow: none; background: #fcfdff; }
+.purchase-card:hover { border-color: #94bff1; box-shadow: 0 8px 22px rgba(0, 0, 0, 0.06); }
+.purchase-card .qi { background: #eef2f7; color: var(--t2); }
+
+.card-head { display:flex; flex-direction:column; gap:5px; min-width:0; }
+.ch-title { font-size:13.5px; font-weight:600; line-height:1.5; overflow-wrap:anywhere; }
+.ch-meta { display:flex; align-items:center; gap:6px; flex-wrap:wrap; min-width:0; }
+.ch-meta .mono { flex:1 1 100%; }
+.ch-meta .mono { font-size:11px; color:var(--t3); }
+
 .device-error { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:14px; padding:12px; border-radius:12px; background:#fff0ee; color:#b32921; font-size:13px; }
 .device-error span { flex:1 1 100%; }
 .category-toolbar { display:flex; align-items:center; gap:12px; margin:14px 0; font-size:13px; }
@@ -266,9 +463,6 @@ function closeDetail() {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 10px;
-  }
-  .asset-list .card {
-    margin-bottom: 0;
   }
 }
 </style>

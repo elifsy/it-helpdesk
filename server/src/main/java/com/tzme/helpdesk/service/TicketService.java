@@ -30,12 +30,14 @@ public class TicketService {
     private final AssetMapper assetMapper;
     private final UserMapper userMapper;
     private final NotifyService notifyService;
+    private final IncomingNotificationService incomingNotifications;
     private final NoGen noGen;
     private final HelpdeskProperties props;
     private final RuntimeSettingsService settings;
     private final ManagementMapper management;
     private final RolePermissionService rolePermissions;
     private final KnowledgeManagementService knowledge;
+    private final MissingReportGuard missingReports;
 
     // ---------------- 查询 ----------------
 
@@ -50,6 +52,7 @@ public class TicketService {
         int p = Math.max(1, page);
         int s = Math.max(1, Math.min(100, size));
         List<Ticket> rows = ticketMapper.list(status, open, keyword, creatorId, null, priority, cat1, assetNo, (p - 1) * s, s);
+        if (!com.tzme.helpdesk.security.Roles.isItOrAdmin(u.role())) rows.forEach(row -> row.setPendingReportCount(null));
         long total = ticketMapper.count(status, open, keyword, creatorId, null, priority, cat1, assetNo);
         rows.forEach(this::fillRemain);
         fillQueue(rows);
@@ -62,6 +65,7 @@ public class TicketService {
         if (!u.canManageTickets() && !t.getCreatorId().equals(u.id())) {
             throw new BizException(403, "无权查看该工单");
         }
+        if (com.tzme.helpdesk.security.Roles.isItOrAdmin(u.role())) t.setPendingReportCount(missingReports.pending(t.getCreatorId()));
         TicketDetailVO vo = new TicketDetailVO();
         vo.setTicket(fillRemain(t));
         fillQueue(List.of(t));
@@ -79,6 +83,41 @@ public class TicketService {
     @Transactional
     public Ticket create(TicketCreateReq req) {
         LoginUser u = CurrentUser.require();
+        missingReports.requireCanSubmit(u.id());
+        Ticket t = buildTicket(req, u);
+        if (req.getAssetNo() != null && !req.getAssetNo().isBlank()) {
+            Ticket open = ticketMapper.findOpenByCreatorAndAsset(u.id(), req.getAssetNo());
+            if (open != null)
+                throw new BizException(409, "该设备已有进行中的工单 " + open.getNo()
+                        + "，请在「我的工单」里查看进度或补充信息，关闭后再提交新工单。");
+        }
+        t.setNo(noGen.next("IT"));
+        ticketMapper.insert(t);
+        event(t.getNo(), null, TicketStatus.NEW, "CREATE", u.name(), "提交报修");
+        incomingNotifications.newTicket(t);
+        return fillRemain(ticketMapper.findByNo(t.getNo()));
+    }
+
+    Ticket archiveSupplement(TicketCreateReq req, MissingReport report) {
+        if (req.getCat2() == null || req.getCat2().isBlank()) throw new BizException("请选择具体问题分类");
+        LoginUser user = CurrentUser.require();
+        Ticket t = buildTicket(req, user);
+        t.setNo(noGen.next("IT"));
+        t.setAssetNo(null);
+        t.setKbHit(null);
+        t.setTriedKb(0);
+        t.setStatus(TicketStatus.CLOSED);
+        t.setSource("紧急处理补报");
+        t.setDueAt(null);
+        t.setFinishedAt(report.getCompletedAt());
+        t.setClosedAt(LocalDateTime.now());
+        t.setSolutionNote(report.getDescription());
+        ticketMapper.insert(t);
+        event(t.getNo(), null, TicketStatus.CLOSED, "SUPPLEMENT", user.name(), "补报已完成的紧急处理事项");
+        return ticketMapper.findByNo(t.getNo());
+    }
+
+    private Ticket buildTicket(TicketCreateReq req, LoginUser u) {
         var runtime = settings.get();
         String type = req.getType() == null ? "INCIDENT" : req.getType();
         var typeCategories = runtime.getCategoriesByType().get(type);
@@ -86,18 +125,10 @@ public class TicketService {
         List<String> categories = typeCategories.get(req.getCat1());
         if (categories == null || (req.getCat2()!=null && !req.getCat2().isBlank() && !categories.contains(req.getCat2())))
             throw new BizException("问题分类与当前问题类型不匹配，请重新选择");
-        // 同一人对同一设备只允许一张未结工单，避免重复提报
-        if (req.getAssetNo() != null && !req.getAssetNo().isBlank()) {
-            Ticket open = ticketMapper.findOpenByCreatorAndAsset(u.id(), req.getAssetNo());
-            if (open != null)
-                throw new BizException(409, "该设备已有进行中的工单 " + open.getNo()
-                        + "，请在「我的工单」里查看进度或补充信息，关闭后再提交新工单。");
-        }
         String priority = PriorityCalculator.calc(req.getCat1(), req.getImpact(), req.getWorkImpact());
         LocalDateTime now = LocalDateTime.now();
 
         Ticket t = new Ticket();
-        t.setNo(noGen.next("IT"));
         t.setTitle(req.getTitle());
         t.setDescription(req.getDescription());
         t.setType(type);
@@ -119,12 +150,7 @@ public class TicketService {
         t.setKbHit(req.getKbHit());
         t.setTriedKb(req.getTriedKb() == null ? 0 : req.getTriedKb());
         t.setDueAt(now.plusHours(runtime.hoursOf(priority)));
-        ticketMapper.insert(t);
-
-        event(t.getNo(), null, TicketStatus.NEW, "CREATE", u.name(), "提交报修");
-        notifyService.notifyPermission("ticket.accept", "新工单待受理",
-                t.getNo() + " " + t.getTitle() + "（" + priority + "）", "TICKET", t.getNo());
-        return fillRemain(ticketMapper.findByNo(t.getNo()));
+        return t;
     }
 
     // ---------------- 流转 ----------------

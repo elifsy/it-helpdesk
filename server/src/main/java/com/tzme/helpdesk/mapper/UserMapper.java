@@ -10,6 +10,8 @@ import java.util.List;
 public interface UserMapper {
     @org.apache.ibatis.annotations.Select("select * from sys_user where status='ACTIVE' order by id")
     List<User> listActive();
+    @org.apache.ibatis.annotations.Select("select name from sys_user where status='ACTIVE'")
+    List<String> listActiveNames();
     @org.apache.ibatis.annotations.Select("select * from sys_user where id=#{id} for update")
     User findByIdForUpdate(@Param("id") Long id);
     @org.apache.ibatis.annotations.Select("select * from sys_user where (#{keyword}='' or name like concat('%',#{keyword},'%') or employee_no like concat('%',#{keyword},'%')) and (#{status}='' or status=#{status}) order by id limit #{offset},#{size}")

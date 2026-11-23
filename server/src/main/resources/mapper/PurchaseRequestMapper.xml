@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tzme.helpdesk.mapper.PurchaseRequestMapper">
+
+  <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+    insert into it_purchase_request(no, catalog_id, item_name, category, applicant, applicant_id, dept, reason, expect_date, status)
+    values(#{no}, #{catalogId}, #{itemName}, #{category}, #{applicant}, #{applicantId}, #{dept}, #{reason}, #{expectDate}, 'PENDING')
+  </insert>
+
+  <update id="update">
+    update it_purchase_request
+    <set>
+      <if test="status != null">status = #{status},</if>
+      <if test="approver != null">approver = #{approver},</if>
+      <if test="handledAt != null">handled_at = #{handledAt},</if>
+      <if test="erpNo != null">erp_no = #{erpNo},</if>
+      <if test="orderedAt != null">ordered_at = #{orderedAt},</if>
+      <if test="assetNo != null">asset_no = #{assetNo},</if>
+      <if test="handoverBy != null">handover_by = #{handoverBy},</if>
+      <if test="handoverAt != null">handover_at = #{handoverAt},</if>
+      <if test="remark != null">remark = #{remark},</if>
+      <if test="dingInstanceId != null">ding_instance_id = #{dingInstanceId},</if>
+      <if test="dingStatus != null">ding_status = #{dingStatus},</if>
+      <if test="dingSyncedAt != null">ding_synced_at = #{dingSyncedAt},</if>
+      <if test="dingMessage != null">ding_message = #{dingMessage},</if>
+    </set>
+    where id = #{id}
+  </update>
+
+  <select id="findById" resultType="com.tzme.helpdesk.domain.PurchaseRequest">
+    select r.*, a.name as assetName
+    from it_purchase_request r left join it_asset a on a.no = r.asset_no
+    where r.id = #{id}
+  </select>
+
+  <select id="findByNo" resultType="com.tzme.helpdesk.domain.PurchaseRequest">
+    select r.*, a.name as assetName
+    from it_purchase_request r left join it_asset a on a.no = r.asset_no
+    where r.no = #{no}
+  </select>
+
+  <select id="list" resultType="com.tzme.helpdesk.domain.PurchaseRequest">
+    select r.*, a.name as assetName,
+      (select count(*) from it_missing_report m where m.status='PENDING' and m.requester_id =
+        coalesce(r.applicant_id, (select case when count(*)=1 then min(u.id) end from sys_user u where u.name=r.applicant)))
+      as pending_report_count
+    from it_purchase_request r left join it_asset a on a.no = r.asset_no
+    <where>
+      <if test="status != null and status != ''">and r.status = #{status}</if>
+      <if test="mine">and r.applicant = #{applicant}</if>
+    </where>
+    order by case r.status
+               when 'PENDING' then 0
+               when 'APPROVED' then 1
+               when 'ORDERED' then 2
+               when 'PENDING_PICKUP' then 3
+               else 4 end,
+             r.created_at desc
+    limit 200
+  </select>
+
+  <select id="countPending" resultType="long">
+    select count(*) from it_purchase_request where status = 'PENDING'
+  </select>
+</mapper>

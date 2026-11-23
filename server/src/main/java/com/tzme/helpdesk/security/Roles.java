@@ -14,4 +14,9 @@ public final class Roles {
         if (old.contains("VIEWER")) return "VIEWER";
         return "USER";
     }
+
+    public static boolean isItOrAdmin(String value) {
+        String role = normalize(value);
+        return "IT".equals(role) || "ADMIN".equals(role);
+    }
 }

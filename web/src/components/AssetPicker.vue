@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { ASSET_STATUS_CLASS } from '../utils/dict'
+import { autoIconKey, iconClass } from '../utils/deviceIcons'
+import DeviceIcon from './DeviceIcon.vue'
 
 interface PickerAsset {
   no: string
@@ -12,6 +14,8 @@ interface PickerAsset {
   location?: string | null
   userName?: string | null
   borrower?: string | null
+  /** 指定图标 key（采购目录可配）；为空时按分类+名称自动匹配 */
+  icon?: string | null
 }
 const props = withDefaults(defineProps<{
   assets: PickerAsset[]
@@ -23,7 +27,17 @@ const props = withDefaults(defineProps<{
   emptyText?: string
   /** 当前使用人：命中 userName/borrower 的设备标「我的设备」并优先排序 */
   myName?: string
-}>(), { loading: false, categoryLabel: '资产分类', emptyText: '该分类下暂无可选设备，可切换其他分类查看。', myName: '' })
+  /** 统计口径后缀，如「台可选设备」/「个可申请型号」 */
+  countSuffix?: string
+  /** 是否显示卡片上的编号行（采购目录没有资产编号） */
+  showNo?: boolean
+  selectLabel?: string
+  searchPlaceholder?: string
+}>(), {
+  loading: false, categoryLabel: '资产分类', emptyText: '该分类下暂无可选设备，可切换其他分类查看。',
+  myName: '', countSuffix: '台可选设备', showNo: true, selectLabel: '选择这台设备',
+  searchPlaceholder: '搜索设备名称 / 型号 / 编号'
+})
 /** 是否为「我的设备」（本人领用或本人借用） */
 function mine(asset: PickerAsset) {
   return !!props.myName && (asset.userName === props.myName || asset.borrower === props.myName)
@@ -59,12 +73,12 @@ function chooseCategory(category: string) {
   if (props.modelValue && !props.assets.some(asset => asset.no === props.modelValue && (!category || asset.category === category))) emit('update:modelValue', '')
   emit('update:category', category)
 }
-function icon(category: string) {
-  if (/打印|复印|扫描/.test(category)) return 'printer'
-  if (/服务|存储/.test(category)) return 'server'
-  if (/网络|路由|交换/.test(category)) return 'network'
-  if (/显示|会议|投影|屏/.test(category)) return 'screen'
-  return 'laptop'
+/** 图标 key：目录配置优先，否则按分类 + 名称自动匹配 */
+function iconOf(asset: PickerAsset) {
+  return asset.icon && asset.icon !== 'auto' ? asset.icon : autoIconKey(asset.category, asset.name)
+}
+function artClass(asset: PickerAsset) {
+  return iconClass(iconOf(asset))
 }
 async function onChoiceKeydown(event: KeyboardEvent, index: number) {
   const count = shown.value.length
@@ -96,8 +110,8 @@ async function onChoiceKeydown(event: KeyboardEvent, index: number) {
     </aside>
     <section class="picker-main" aria-label="可选设备">
       <div class="picker-toolbar">
-        <div><h4>{{ category || '全部设备' }}</h4><p>共 {{ shown.length }} 台可选设备</p></div>
-        <label class="picker-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4 4" /></svg><input v-model="keyword" type="search" placeholder="搜索设备名称 / 型号 / 编号" aria-label="搜索可选设备" :disabled="loading" /></label>
+        <div><h4>{{ category || '全部设备' }}</h4><p>共 {{ shown.length }}{{ countSuffix }}</p></div>
+        <label class="picker-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4 4" /></svg><input v-model="keyword" type="search" :placeholder="searchPlaceholder" aria-label="搜索可选设备" :disabled="loading" /></label>
       </div>
       <div class="picker-results">
         <div v-if="loading" class="picker-empty" role="status">正在加载可选设备…</div>
@@ -111,20 +125,14 @@ async function onChoiceKeydown(event: KeyboardEvent, index: number) {
             role="radio" :aria-checked="modelValue === asset.no" :aria-label="(mine(asset) ? '我的设备，' : '') + asset.name + '，' + asset.no + '，' + asset.status"
             :tabindex="modelValue === asset.no || (!selectedVisible && index === 0) ? 0 : -1" :data-asset-no="asset.no"
             @click="emit('update:modelValue', asset.no)" @keydown="onChoiceKeydown($event, index)">
-            <div class="device-art" :class="'art-' + icon(asset.category)">
+            <div class="device-art" :class="artClass(asset)">
               <span class="pill" :class="ASSET_STATUS_CLASS[asset.status] || 'b-gray'">{{ asset.status }}</span>
-              <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <g v-if="icon(asset.category) === 'printer'"><rect x="11" y="25" width="42" height="22" rx="4" /><path d="M18 25V11h28v14M19 38h26v16H19zM43 31h3M24 44h16m-16 5h12" /></g>
-                <g v-else-if="icon(asset.category) === 'server'"><rect x="15" y="8" width="34" height="48" rx="5" /><path d="M15 24h34M15 40h34m-27-8h2m-2-16h2m-2 32h2m7-32h10m-10 16h10m-10 16h10" /></g>
-                <g v-else-if="icon(asset.category) === 'network'"><rect x="9" y="27" width="46" height="22" rx="5" /><path d="M17 27V12m30 15V12M18 39h2m7 0h2m7 0h2m7 0h2M24 19a12 12 0 0 1 16 0m-12 5a6 6 0 0 1 8 0" /></g>
-                <g v-else-if="icon(asset.category) === 'screen'"><rect x="8" y="10" width="48" height="33" rx="4" /><path d="M25 54h14M32 43v11M8 36h48" /></g>
-                <g v-else><rect x="14" y="11" width="36" height="29" rx="3" /><path d="M14 40 7 50h50l-7-10M26 46h12" /><path d="m25 25 5 4 9-10" /></g>
-              </svg>
+              <DeviceIcon :name="iconOf(asset)" />
               <span v-if="modelValue === asset.no" class="selected-mark" aria-hidden="true">✓</span>
               <span v-if="mine(asset)" class="mine-mark">我的设备</span>
             </div>
-            <div class="device-info"><h5>{{ asset.name }}</h5><div class="device-no mono">{{ asset.no }}</div><p v-if="asset.model">型号：{{ asset.model }}</p><div class="device-category">{{ asset.category }}</div><p>{{ asset.location || '未标注位置' }}</p><p v-if="asset.sn" class="device-sn">SN：{{ asset.sn }}</p></div>
-            <div class="device-select"><span>{{ modelValue === asset.no ? '已选择' : '选择这台设备' }}</span><i aria-hidden="true">{{ modelValue === asset.no ? '✓' : '' }}</i></div>
+            <div class="device-info"><h5>{{ asset.name }}</h5><div v-if="showNo" class="device-no mono">{{ asset.no }}</div><p v-if="asset.model">型号：{{ asset.model }}</p><div class="device-category">{{ asset.category }}</div><p>{{ asset.location || '未标注位置' }}</p><p v-if="asset.sn" class="device-sn">SN：{{ asset.sn }}</p></div>
+            <div class="device-select"><span>{{ modelValue === asset.no ? '已选择' : selectLabel }}</span><i aria-hidden="true">{{ modelValue === asset.no ? '✓' : '' }}</i></div>
           </button>
         </div>
       </div>
@@ -150,9 +158,9 @@ async function onChoiceKeydown(event: KeyboardEvent, index: number) {
 .device-options { display:grid; grid-template-columns:repeat(auto-fill,minmax(205px,1fr)); gap:14px; align-items:stretch; }
 .device-option { display:flex; flex-direction:column; min-width:0; border:1px solid #e4e8ee; border-radius:14px; background:#fff; padding:0; text-align:left; cursor:pointer; overflow:hidden; transition:border-color .15s,box-shadow .15s; }
 .device-option:hover { border-color:#94bff1; box-shadow:0 4px 14px rgba(0,74,148,.07); }.device-option.selected { border-color:var(--brand); box-shadow:0 0 0 1px var(--brand); }
-.device-art { position:relative; display:flex; align-items:center; justify-content:center; height:104px; flex-shrink:0; background:linear-gradient(135deg,#f2f6fc,#e8f1fc); color:#7b9bc6; }
+/* 底色与描边色由全局 .art-xxx 提供（按图标族配色），这里只管排版 */
+.device-art { position:relative; display:flex; align-items:center; justify-content:center; height:104px; flex-shrink:0; }
 .device-art > svg { width:66px; height:66px; }.device-art .pill { position:absolute; top:10px; left:10px; font-size:10px; font-weight:500; white-space:nowrap; }
-.art-printer { background:linear-gradient(135deg,#f0f6f4,#e9f3ef); color:#71a995; }.art-server { background:linear-gradient(135deg,#f3f0fa,#edeafa); color:#9b86c5; }.art-network { background:linear-gradient(135deg,#eef6fa,#e7f2f7); color:#6a9fb9; }.art-screen { background:linear-gradient(135deg,#f8f3ec,#f4eade); color:#bd9b6a; }
 .selected-mark { position:absolute; top:10px; right:10px; width:21px; height:21px; border-radius:50%; background:var(--brand); color:#fff; display:grid; place-items:center; font-size:12px; }
 .mine-mark { position:absolute; bottom:9px; left:10px; padding:3px 9px; border-radius:999px; background:#fff; color:var(--brand); font-size:10px; font-weight:600; letter-spacing:.02em; box-shadow:0 2px 8px rgba(0,74,148,.14); }
 .device-info { padding:13px 13px 12px; flex:1; }.device-info h5 { margin:0 0 7px; font-size:13px; line-height:1.6; font-weight:650; overflow-wrap:anywhere; }.device-no { font-size:10.5px; color:var(--t2); overflow-wrap:anywhere; line-height:1.6; }

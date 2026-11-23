@@ -9,6 +9,9 @@ const bundle=path.resolve(process.env.HELPDESK_UI_DIST||fileURLToPath(new URL('.
 const profile=fileURLToPath(new URL('../server/target/asset-fields-ui-'+Date.now()+'/',import.meta.url))
 await fs.mkdir(profile,{recursive:true})
 const assets=[],writes=[],state={role:'IT',failNext:false}
+let dingSettings={revision:0,approvalEnabled:false,approvalMock:false,approvalPollMinutes:2,approvalProcessCodes:{},approvalMappings:{}}
+const dingFields=['no','bizType','assetNo','assetName','assetCategory','applicant','dept','reason','expectReturn','newAssetNo']
+  .map((key,index)=>({key,label:['申请单号','业务类型','资产编号','资产名称','资产分类','申请人','部门','申请事由','约定归还日期','替换设备编号'][index],defaultName:key}))
 const statuses=['待入库','闲置','在用','维修中','待报废','已报废']
 const server=http.createServer(async(req,res)=>{
   const url=new URL(req.url,'http://localhost')
@@ -17,13 +20,20 @@ const server=http.createServer(async(req,res)=>{
     const input=chunks.length?JSON.parse(Buffer.concat(chunks).toString()):{}
     let data=[],status=200,message=''
     if(url.pathname==='/api/auth/config')data={demoEnabled:false,corpId:'fixture-only'}
-    else if(url.pathname==='/api/auth/me')data={id:1,name:'资产测试人员',roles:[state.role],role:state.role,permissions:['asset.view',...(state.role==='IT'?['asset.create']:[])]}
+    else if(url.pathname==='/api/auth/me')data={id:1,name:'资产测试人员',roles:[state.role],role:state.role,permissions:['asset.view',...(['IT','ADMIN'].includes(state.role)?['asset.create']:[]),...(state.role==='ADMIN'?['settings.manage','request.approve']:[])]}
+    else if(url.pathname==='/api/admin/manage/settings') {
+      if(req.method==='PUT')dingSettings={...input,revision:dingSettings.revision+1}
+      data=dingSettings
+    }
+    else if(url.pathname==='/api/admin/ding-approval/status')data={enabled:dingSettings.approvalEnabled,mock:dingSettings.approvalMock,pending:0,processCodes:dingSettings.approvalProcessCodes}
+    else if(url.pathname==='/api/admin/ding-approval/fields')data=dingFields
+    else if(url.pathname==='/api/admin/ding-approval/lookup')data={name:url.searchParams.get('name'),processCode:'PROC-LOOKUP-TEST'}
     else if(url.pathname.includes('unread'))data={count:0}
     else if(url.pathname==='/api/asset-categories')data=[{id:1,name:'终端',sort:0,assetCount:assets.length}]
     else if(url.pathname==='/api/assets'&&req.method==='POST') {
       writes.push(input)
-      if(state.failNext){state.failNext=false;status=409;message='资产编号已存在，请调整后重试'}
-      else {data={...input};assets.push(data)}
+      if(state.failNext){state.failNext=false;status=409;message='ERP资产编号已存在，请调整后重试'}
+      else {data={...input,no:'ZC-20261123-'+String(assets.length+1).padStart(5,'0')};assets.push(data)}
     } else if(url.pathname==='/api/assets')data=url.searchParams.has('page')?{list:assets,total:assets.length,page:1,size:15}:assets
     else if(url.pathname.startsWith('/api/assets/')) {
       const no=decodeURIComponent(url.pathname.slice('/api/assets/'.length)),asset=assets.find(a=>a.no===no)
@@ -60,7 +70,7 @@ async function button(text,scope='main'){await evaluate(`Array.from(document.que
 async function fill(label,value){await evaluate(`(()=>{const e=document.querySelector('[aria-label="'+${JSON.stringify(label)}+'"]');e.value=${JSON.stringify(value)};e.dispatchEvent(new Event(e.tagName==='SELECT'?'change':'input',{bubbles:true}))})()`)}
 async function navigate(route){await call('Page.navigate',{url:frontend+'/?fixture='+Date.now()+'#'+route})}
 async function screenshot(name){await fs.mkdir(new URL('../shots/regression/',import.meta.url),{recursive:true});await fs.writeFile(new URL('../shots/regression/'+name,import.meta.url),Buffer.from((await call('Page.captureScreenshot',{format:'png'})).data,'base64'))}
-const labels=['设备名称','设备型号','新增资产分类','SN序列号','存放位置','购置日期','维保到期','维保方式','设备状态','设备备注']
+const labels=['设备名称','设备型号','新增资产分类','ERP资产编号','SN序列号','存放位置','购置日期','维保到期','维保方式','设备状态','选择资产卡片图标','设备备注']
 const pass=text=>{checks.push(text);console.log('PASS '+text)}
 try {
   let port;for(let i=0;i<60&&!port;i++){try{port=Number((await fs.readFile(path.join(profile,'DevToolsActivePort'),'utf8')).split('\n')[0])}catch{await pause(100)}}assert.ok(port)
@@ -74,12 +84,14 @@ try {
   await button('＋ 新增资产');await until('!!document.querySelector(".asset-add-dialog")')
   const actual=await evaluate('Array.from(document.querySelectorAll(".asset-add-dialog fieldset [aria-label]")).map(e=>e.getAttribute("aria-label"))')
   assert.deepEqual(actual,labels)
+  assert.equal(await evaluate('document.querySelector("[aria-label=ERP资产编号]").required'),false)
+  assert.equal(await evaluate('!!document.querySelector(".asset-add-dialog [aria-label=资产编号]")'),false)
   assert.equal(await evaluate('document.querySelector("[aria-label=设备型号]").required'),false)
   assert.equal(await evaluate('document.querySelector("[aria-label=设备型号]").maxLength'),128)
   assert.equal(await evaluate('document.querySelector("[aria-label=设备状态]").value'),'待入库')
   assert.equal(await evaluate('document.querySelector("[aria-label=设备状态]").textContent.includes("借出中")'),false)
   pass('新增完整提供名称、型号、分类、SN、位置、购置日期、维保、状态与备注')
-  const values={'资产编号':'ASSET-UI-1','设备名称':'办公笔记本','设备型号':'ThinkPad T14s Gen 5','SN序列号':'SN-CREATE-1','存放位置':'A座3楼','购置日期':'2026-01-01','维保到期':'2029-01-01','维保方式':'厂商保修','设备状态':'闲置','设备备注':'新增时完整填写'}
+  const values={'ERP资产编号':'ERP-UI-01','设备名称':'办公笔记本','设备型号':'ThinkPad T14s Gen 5','SN序列号':'SN-CREATE-1','存放位置':'A座3楼','购置日期':'2026-01-01','维保到期':'2029-01-01','维保方式':'厂商保修','设备状态':'闲置','设备备注':'新增时完整填写'}
   for(const [label,value]of Object.entries(values))await fill(label,value)
   await screenshot('asset-create-full-desktop.png')
   state.failNext=true;await button('保存','.asset-add-dialog');await until('document.querySelector(".asset-add-dialog [role=alert]")?.textContent.includes("已存在")')
@@ -87,13 +99,15 @@ try {
   assert.equal(assets.length,0)
   await button('保存','.asset-add-dialog');await until('!document.querySelector(".asset-add-dialog")&&!!document.querySelector(".asset-row")')
   assert.equal(writes.length,2);assert.equal(assets[0].buyDate,'2026-01-01');assert.equal(assets[0].warrantyEnd,'2029-01-01');assert.equal(assets[0].remark,'新增时完整填写')
+  assert.equal(writes[1].no,undefined);assert.equal(writes[1].erpNo,'ERP-UI-01')
+  assert.ok(await evaluate('document.querySelector(".asset-row")?.textContent.includes("ZC-20261123-00001") && document.querySelector(".asset-row .asset-erp-no")?.textContent.includes("ERP-UI-01")'))
   pass('新增完整提交所有字段，失败保留输入并支持重试')
   await call('Page.reload');await until('document.querySelector(".asset-row")?.textContent.includes("T14s Gen 5")')
   await button('查看详情','.asset-row');await until('document.querySelector(".info-grid")?.textContent.includes("ThinkPad T14s Gen 5")')
   await button('编辑设备');await until('!!document.querySelector(".edit-dialog")')
   const editLabels=await evaluate('Array.from(document.querySelectorAll(".edit-dialog fieldset [aria-label]")).map(e=>e.getAttribute("aria-label").replace("编辑资产分类","新增资产分类"))')
   assert.deepEqual(editLabels,actual)
-  for(const [label,value]of Object.entries(values).filter(([label])=>label!=='资产编号'))assert.equal(await evaluate(`document.querySelector('[aria-label="'+${JSON.stringify(label)}+'"]').value`),value,label)
+  for(const [label,value]of Object.entries(values))assert.equal(await evaluate(`document.querySelector('[aria-label="'+${JSON.stringify(label)}+'"]').value`),value,label)
   await fill('设备型号','ThinkPad T14s Gen 6');await button('保存设备','.edit-dialog')
   await until('!document.querySelector(".edit-dialog")&&document.querySelector(".info-grid")?.textContent.includes("Gen 6")')
   assert.equal(assets[0].model,'ThinkPad T14s Gen 6');assert.equal(assets[0].warranty,'厂商保修')
@@ -103,12 +117,12 @@ try {
   await button('＋ 新增资产');await until('!!document.querySelector(".asset-add-dialog")')
   assert.ok(await evaluate('document.documentElement.scrollWidth<=innerWidth&&document.querySelector(".asset-add-dialog").getBoundingClientRect().right<=innerWidth&&document.querySelector(".asset-add-dialog .dlg-f").getBoundingClientRect().bottom<=innerHeight'))
   await screenshot('asset-create-full-mobile.png')
-  await fill('资产编号','ASSET-UI-2');await fill('设备名称','只填必填项')
+  await fill('设备名称','只填必填项')
   await button('保存','.asset-add-dialog');await until('!document.querySelector(".asset-add-dialog")&&document.querySelectorAll(".asset-card").length===2')
-  assert.equal(assets[1].model,'');assert.equal(assets[1].buyDate,null);assert.equal(assets[1].warrantyEnd,null);assert.equal(assets[1].status,'待入库')
+  assert.equal(assets[1].erpNo,'');assert.equal(assets[1].model,'');assert.equal(assets[1].buyDate,null);assert.equal(assets[1].warrantyEnd,null);assert.equal(assets[1].status,'待入库')
   pass('手机新增可滚动且按钮可见，型号和其余资料可留空，日期以空值提交')
   await button('＋ 新增资产');await until('!!document.querySelector(".asset-add-dialog")')
-  await fill('资产编号','ASSET-UI-3');await fill('设备名称','填写库位自动入库')
+  await fill('设备名称','填写库位自动入库')
   await fill('存放位置','   ');assert.equal(await evaluate('document.querySelector("[aria-label=设备状态]").value'),'待入库')
   await fill('存放位置','11');await until('document.querySelector("[aria-label=设备状态]").value==="闲置"')
   await fill('设备状态','维修中');await fill('存放位置','12')
@@ -116,16 +130,30 @@ try {
   await fill('设备状态','待入库');await until('document.querySelector("[aria-label=设备状态]").value==="闲置"')
   await button('保存','.asset-add-dialog');await until('!document.querySelector(".asset-add-dialog")&&document.querySelectorAll(".asset-card").length===3')
   assert.equal(assets[2].status,'闲置');assert.equal(assets[2].location,'12')
-  await navigate('/admin/assets/ASSET-UI-2');await until('!!document.querySelector(".info-grid")')
+  await navigate('/admin/assets/'+assets[1].no);await until('!!document.querySelector(".info-grid")')
   await button('编辑设备');await until('!!document.querySelector(".edit-dialog")')
   assert.equal(await evaluate('document.querySelector("[aria-label=设备状态]").value'),'待入库')
   await fill('存放位置','11');await until('document.querySelector("[aria-label=设备状态]").value==="闲置"')
   await button('保存设备','.edit-dialog');await until('!document.querySelector(".edit-dialog")')
   assert.equal(assets[1].status,'闲置');assert.equal(assets[1].location,'11')
   pass('新增和编辑填写有效位置时待入库自动改为闲置，空格不触发，也不覆盖维修状态')
+  state.role='ADMIN';await navigate('/admin/ding-approval')
+  await until('document.querySelectorAll(".map-row").length===10')
+  await evaluate('(()=>{const e=document.querySelector(".type-head + label input");e.value="TEST-PROCESS";e.dispatchEvent(new Event("input",{bubbles:true}));const field=document.querySelector(".map-row input");field.value="申请编号";field.dispatchEvent(new Event("input",{bubbles:true}))})()')
+  await button('保存配置','.ding-page');await until('Array.from(document.querySelectorAll(".ding-page button")).some(b=>b.textContent.trim()==="保存配置"&&!b.disabled)')
+  assert.equal(dingSettings.approvalProcessCodes.RECEIVE,'TEST-PROCESS')
+  assert.equal(dingSettings.approvalMappings.RECEIVE.no,'申请编号')
+  await call('Page.reload');await until('document.querySelector(".map-row input")?.value==="申请编号"')
+  await evaluate('(()=>{const e=document.querySelector(".lookup input");e.value="资产领用审批";e.dispatchEvent(new Event("input",{bubbles:true}))})()')
+  await button('查询并填入','.ding-page');await until('document.querySelector(".type-head + label input")?.value==="PROC-LOOKUP-TEST"')
+  await button('保存配置','.ding-page');await until('Array.from(document.querySelectorAll(".ding-page button")).some(b=>b.textContent.trim()==="保存配置"&&!b.disabled)')
+  assert.equal(dingSettings.approvalProcessCodes.RECEIVE,'PROC-LOOKUP-TEST')
+  assert.ok(await evaluate('document.documentElement.scrollWidth<=innerWidth'))
+  await screenshot('ding-approval-mapping-mobile.png')
+  pass('独立钉钉审批页加载字段目录，按名称查询并保存模板和映射，刷新回显且手机无横向溢出')
   state.role='VIEWER';await navigate('/admin/assets');await until('!!document.querySelector(".asset-toolbar")')
   assert.equal(await evaluate('document.querySelector(".asset-toolbar").textContent.includes("新增资产")'),false)
-  await navigate('/admin/assets/ASSET-UI-1');await until('!!document.querySelector(".info-grid")')
+  await navigate('/admin/assets/'+assets[0].no);await until('!!document.querySelector(".info-grid")')
   assert.equal(await evaluate('!!document.querySelector("[data-action=edit-asset]")'),false)
   assert.ok(await evaluate('document.querySelector(".info-grid").textContent.includes("Gen 6")'))
   assert.deepEqual(exceptions,[])

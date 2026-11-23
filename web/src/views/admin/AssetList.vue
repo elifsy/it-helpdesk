@@ -6,6 +6,10 @@ import { ASSET_STATUS_CLASS } from '../../utils/dict'
 import { toast } from '../../utils/toast'
 import { useAuthStore } from '../../stores/auth'
 import AssetFormFields from '../../components/AssetFormFields.vue'
+import AssetImportDialog from '../../components/AssetImportDialog.vue'
+import DeviceIcon from '../../components/DeviceIcon.vue'
+import { autoIconKey, iconClass } from '../../utils/deviceIcons'
+function rowIcon(a: any) { return a.icon || autoIconKey(a.category, a.name) }
 import { emptyAssetForm } from '../../utils/asset-form'
 
 const auth = useAuthStore()
@@ -27,6 +31,7 @@ const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
 const showAdd = ref(false)
+const showImport = ref(false)
 const form = ref(emptyAssetForm())
 const addError = ref('')
 const showCategories = ref(false)
@@ -88,6 +93,11 @@ function assetRoute(asset: any) {
   } }
 }
 function openDetail(asset: any) { void router.push(assetRoute(asset)) }
+function onImported(count: number) {
+  showImport.value = false
+  toast(`已成功导入 ${count} 台资产`)
+  void writeQuery({ page: undefined }, true)
+}
 function openAdd() {
   form.value = emptyAssetForm(category.value || categories.value[0]?.name || '')
   addError.value = ''
@@ -96,7 +106,7 @@ function openAdd() {
 function closeAdd() { if (!saving.value) showAdd.value = false }
 async function addAsset() {
   if (saving.value || !auth.canCreateAsset) return
-  if (!form.value.no.trim() || !form.value.name.trim() || !form.value.category) { toast('请填写资产编号、名称并选择分类'); return }
+  if (!form.value.name.trim() || !form.value.category) { toast('请填写设备名称并选择分类'); return }
   if (form.value.buyDate && form.value.warrantyEnd && form.value.warrantyEnd < form.value.buyDate) { addError.value = '维保到期日期不能早于购置日期'; return }
   addError.value = ''
   saving.value = true
@@ -151,7 +161,7 @@ async function deleteCategory(row: AssetCategory) {
     <div class="page-h">
       <div class="asset-heading"><h2>资产台账</h2><p class="ledger-count">共 {{ total }} 台 · 每页 {{ size }} 台</p></div>
       <div class="row asset-toolbar" style="gap: 8px">
-        <input v-model="keyword" class="inp" style="width: 220px" placeholder="编号 / 名称 / 型号 / SN / 使用人" aria-label="搜索资产台账" @keyup.enter="search" />
+        <input v-model="keyword" class="inp" style="width: 248px" placeholder="资产编号 / ERP编号 / 名称 / SN" aria-label="搜索资产台账" @keyup.enter="search" />
         <select :value="category" class="sel category-filter" aria-label="资产分类筛选" @change="selectFilter('category', $event)">
           <option value="">全部分类</option><option v-for="c in categories" :key="c.id" :value="c.name">{{ c.name }}</option>
         </select>
@@ -160,6 +170,7 @@ async function deleteCategory(row: AssetCategory) {
         </select>
         <button class="btn" @click="search">查询</button>
         <button v-if="auth.canCreateAsset" class="btn" @click="editCategory(); showCategories = true">管理分类</button>
+        <button v-if="auth.canCreateAsset" class="btn" @click="showImport = true">批量导入</button>
         <button v-if="auth.canCreateAsset" class="btn pri" @click="openAdd">＋ 新增资产</button>
       </div>
     </div>
@@ -169,7 +180,7 @@ async function deleteCategory(row: AssetCategory) {
       <table class="tb">
         <thead>
           <tr>
-            <th>资产编号</th>
+            <th>资产编号 / ERP</th>
             <th>名称 / 型号</th>
             <th>类别</th>
             <th>SN</th>
@@ -189,8 +200,8 @@ async function deleteCategory(row: AssetCategory) {
             <td colspan="9" class="empty">没有资产</td>
           </tr>
           <tr v-for="a in rows" :key="a.no" class="asset-row" @click="openDetail(a)">
-            <td class="mono"><router-link :to="assetRoute(a)" @click.stop>{{ a.no }}</router-link></td>
-            <td><router-link style="font-weight:600" :to="assetRoute(a)" @click.stop>{{ a.name }}</router-link><div v-if="a.model" class="small muted asset-model">{{ a.model }}</div></td>
+            <td><router-link class="mono" :to="assetRoute(a)" @click.stop>{{ a.no }}</router-link><div v-if="a.erpNo" class="small muted asset-erp-no">ERP {{ a.erpNo }}</div></td>
+            <td><div class="name-cell"><span class="row-icon" :class="iconClass(rowIcon(a))"><DeviceIcon :name="rowIcon(a)" /></span><div><router-link style="font-weight:600" :to="assetRoute(a)" @click.stop>{{ a.name }}</router-link><div v-if="a.model" class="small muted asset-model">{{ a.model }}</div></div></div></td>
             <td>{{ a.category }}</td>
             <td class="mono">{{ a.sn || '—' }}</td>
             <td>{{ a.userName || '—' }}</td>
@@ -210,6 +221,7 @@ async function deleteCategory(row: AssetCategory) {
       <button v-for="asset in rows" :key="asset.no" class="asset-card" @click="openDetail(asset)">
         <div class="card-line"><span class="mono">{{ asset.no }}</span><span class="pill" :class="ASSET_STATUS_CLASS[asset.status] || 'b-gray'">{{ asset.status }}</span></div>
         <strong>{{ asset.name }}</strong>
+        <div v-if="asset.erpNo" class="card-meta asset-erp-no">ERP资产编号 {{ asset.erpNo }}</div>
         <div v-if="asset.model" class="card-meta asset-model">型号：{{ asset.model }}</div>
         <div class="card-line card-meta"><span>{{ asset.category }}</span><span>{{ asset.userName || '未分配使用人' }}</span></div>
         <div class="card-line card-meta"><span>{{ asset.location || '位置未填写' }}</span><span class="detail-link">查看详情 ›</span></div>
@@ -226,12 +238,14 @@ async function deleteCategory(row: AssetCategory) {
       点击设备编号或名称可查看详情、操作履历和二维码。
     </div>
 
+    <AssetImportDialog v-if="showImport && auth.canCreateAsset" :categories="categories" @close="showImport = false" @imported="onImported" />
+
     <div v-if="showAdd" class="mask" @click.self="closeAdd">
       <form class="dlg asset-add-dialog" role="dialog" aria-modal="true" aria-labelledby="asset-add-title" @submit.prevent="addAsset">
         <div class="dlg-h"><span id="asset-add-title">新增资产</span><button type="button" class="x close-add" aria-label="关闭新增资产" :disabled="saving" @click="closeAdd">×</button></div>
         <div class="dlg-b">
           <div v-if="addError" class="category-error" role="alert">{{ addError }}</div>
-          <div class="fld"><label class="lb">资产编号<i>*</i><input v-model="form.no" class="inp" required maxlength="32" aria-label="资产编号" placeholder="IT-PC-2026-0001" :disabled="saving" /></label></div>
+          <p class="small muted auto-number-hint">资产编号在保存时自动生成。</p>
           <AssetFormFields :form="form" :categories="categories" category-label="新增资产分类" :disabled="saving">
             <template #category-actions><button type="button" class="btn sm" @click="editCategory(); showCategories = true">添加或管理分类</button></template>
           </AssetFormFields>
@@ -266,6 +280,8 @@ async function deleteCategory(row: AssetCategory) {
 </template>
 
 <style scoped>
+.name-cell { display:flex; align-items:center; gap:9px; min-width:0; }
+.row-icon { flex:0 0 30px; width:30px; height:30px; border-radius:8px; padding:4px; }
 .page-h {
   display: flex;
   align-items: center;
@@ -286,8 +302,9 @@ async function deleteCategory(row: AssetCategory) {
 .category-manager .dlg-b { max-height:70vh; overflow:auto; }
 .asset-add-dialog { max-width:650px; display:flex; flex-direction:column; overflow:hidden; }
 .asset-add-dialog .dlg-b { overflow-y:auto; min-height:0; }.asset-add-dialog .dlg-h,.asset-add-dialog .dlg-f { flex-shrink:0; }
-.asset-add-dialog .lb .inp { display:block; margin-top:7px; }.close-add { border:0; background:none; padding:0; }
+.auto-number-hint { margin:0 0 14px; }.close-add { border:0; background:none; padding:0; }
 .asset-model { margin-top:4px; overflow-wrap:anywhere; }
+.asset-erp-no { margin-top:4px; overflow-wrap:anywhere; }
 @media(max-width:900px) { .page-h { flex-direction:column; align-items:stretch; gap:12px; }.asset-toolbar { justify-content:flex-start; } }
 .page-h h2 {
   font-size: 20px;

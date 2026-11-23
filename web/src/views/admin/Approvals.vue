@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { assetApi, assetCategoryApi, assetRequestApi, type AssetCategory } from '../../api'
-import { REQ_STATUS_CLASS, REQ_STATUS_NAME, REQ_TYPE } from '../../utils/dict'
+import { assetApi, assetCategoryApi, assetRequestApi, dingApprovalApi, type AssetCategory } from '../../api'
+import { HANDOVER_HINT, HANDOVER_NAME, REQ_STATUS_CLASS, REQ_STATUS_NAME, REQ_TYPE, handoverActionLabel } from '../../utils/dict'
 import { toast } from '../../utils/toast'
 import { useAuthStore } from '../../stores/auth'
 import AssetPicker from '../../components/AssetPicker.vue'
@@ -45,7 +45,57 @@ async function load() {
   }
 }
 
-onMounted(load)
+const dingStatus = ref<any>({ enabled: false, mock: false })
+const syncing = ref(false)
+async function loadDingStatus() {
+  try { dingStatus.value = await dingApprovalApi.status() } catch { /* 无权限或未开启时忽略 */ }
+}
+async function syncDing() {
+  if (syncing.value) return
+  syncing.value = true
+  try {
+    const r = await dingApprovalApi.sync()
+    toast(r.handled ? `已同步，处理 ${r.handled} 笔` : '已同步，暂无状态变化')
+    await load()
+  } catch (e: any) {
+    toast(e.message)
+  } finally { syncing.value = false }
+}
+/** IT/管理员确认线下交接（待领取 → 交付；待归还 → 收回；更换分两次） */
+const handing = ref(0)
+async function doHandover(row: any) {
+  if (handing.value) return
+  const stage = row.handoverStatus
+  const tip = stage === 'RETURN'
+    ? (row.type === 'REPLACE'
+        ? `确认已收回原设备 ${row.assetNo}？确认后转入「待领取新机」`
+        : `确认已收回设备 ${row.assetNo}？`)
+    : `确认已把设备 ${row.type === 'REPLACE' ? row.newAssetNo : row.assetNo} 交付给 ${row.applicant}？`
+  if (!window.confirm(tip)) return
+  handing.value = row.id
+  try {
+    const r = await assetRequestApi.handover(row.id)
+    toast(r.status === 'COMPLETED'
+      ? '已完成'
+      : (r.handoverStatus === 'PICKUP' ? '旧机已收回，已转入待领取' : '已确认'))
+    await load()
+  } catch (e: any) {
+    toast(e.message)
+  } finally {
+    handing.value = 0
+  }
+}
+
+/** 本地联调：模拟钉钉审批结果（仅 approvalMock 开启时出现） */
+async function mockDing(row: any, status: string) {
+  try {
+    await dingApprovalApi.mock(row.no, status)
+    await syncDing()
+  } catch (e: any) {
+    toast(e.message)
+  }
+}
+onMounted(() => { void load(); void loadDingStatus() })
 
 async function openApprove(r: any) {
   current.value = r
@@ -95,6 +145,7 @@ async function doReject(r: any) {
       <span :class="{ on: tab === 'PENDING' }" @click="tab = 'PENDING'; load()">待审批</span>
       <span :class="{ on: tab === 'ALL' }" @click="tab = 'ALL'; load()">全部</span>
       <span class="sp" />
+      <button v-if="dingStatus.enabled" class="btn sm" :disabled="syncing" @click="syncDing">{{ syncing ? '同步中…' : '立即同步钉钉结果' }}</button>
       <select v-model="category" class="sel" style="width:150px" aria-label="申请分类筛选"><option value="">全部分类</option><option v-for="c in categories" :key="c.id" :value="c.name">{{ c.name }}</option></select>
       <span class="small muted">共 {{ filteredRows.length }} 条</span>
     </div>
@@ -106,7 +157,8 @@ async function doReject(r: any) {
       <div v-for="r in filteredRows" :key="r.id" class="card">
         <div class="row">
           <span class="pill b-blue">{{ REQ_TYPE[r.type]?.name }}</span>
-          <span class="pill" :class="REQ_STATUS_CLASS[r.status]">{{ REQ_STATUS_NAME[r.status] }}</span>
+          <span v-if="r.status === 'APPROVED' && r.handoverStatus" class="pill" :class="r.handoverStatus === 'PICKUP' ? 'b-green' : 'b-orange'">{{ HANDOVER_NAME[r.handoverStatus] }}</span>
+          <span v-else class="pill" :class="REQ_STATUS_CLASS[r.status]">{{ REQ_STATUS_NAME[r.status] }}</span>
           <span class="sp" />
           <span class="mono">{{ r.no }}</span>
         </div>
@@ -117,13 +169,32 @@ async function doReject(r: any) {
         <div class="small muted" style="margin-top: 5px; line-height: 1.8">
           分类：{{ r.assetCategory || '—' }}<br />
           申请人：{{ r.applicant }}（{{ r.dept }}）<br />
+          <template v-if="r.pendingReportCount"><span class="pill b-orange">{{ r.pendingReportCount }} 条待补报</span><br /></template>
           事由：{{ r.reason }}
           <template v-if="r.expectReturn"><br />约定归还：{{ r.expectReturn }}</template>
           <template v-if="r.newAssetNo"><br />替换新机：{{ r.newAssetNo }}</template>
+          <template v-if="r.dingInstanceId"><br />钉钉审批：<span class="mono">{{ r.dingInstanceId }}</span> · {{ r.dingStatus || 'RUNNING' }}<template v-if="r.dingMessage"> · {{ r.dingMessage }}</template></template>
           <template v-if="r.approver"><br />处理人：{{ r.approver }} · {{ r.handledAt }}</template>
           <template v-if="r.remark"><br />备注：{{ r.remark }}</template>
+          <template v-if="r.status === 'APPROVED' && r.handoverStatus"><br />
+            <span style="color:var(--brand)">{{ HANDOVER_HINT[r.handoverStatus] }}</span>
+          </template>
         </div>
-        <div v-if="r.status === 'PENDING' && auth.canApprove" class="row" style="margin-top: 10px">
+        <div v-if="r.status === 'APPROVED' && r.handoverStatus && auth.canApprove" class="row" style="margin-top: 10px">
+          <span class="sp" />
+          <button class="btn sm pri" :disabled="handing === r.id" @click="doHandover(r)">
+            {{ handing === r.id ? '处理中…' : handoverActionLabel(r.type, r.handoverStatus) }}
+          </button>
+        </div>
+        <div v-else-if="r.status === 'PENDING' && auth.canApprove && r.dingInstanceId" class="row" style="margin-top: 10px">
+          <span class="pill b-blue">钉钉审批中，请在钉钉处理</span>
+          <span class="sp" />
+          <template v-if="dingStatus.mock">
+            <button class="btn sm" @click="mockDing(r, 'TERMINATED')">联调：模拟驳回</button>
+            <button class="btn sm pri" @click="mockDing(r, 'COMPLETED')">联调：模拟通过</button>
+          </template>
+        </div>
+        <div v-else-if="r.status === 'PENDING' && auth.canApprove" class="row" style="margin-top: 10px">
           <span class="sp" />
           <button class="btn sm danger" @click="doReject(r)">驳回</button>
           <button class="btn sm pri" @click="openApprove(r)">批准</button>

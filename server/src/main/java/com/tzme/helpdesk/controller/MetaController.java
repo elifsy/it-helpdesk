@@ -4,6 +4,7 @@ import com.tzme.helpdesk.common.ApiResponse;
 import com.tzme.helpdesk.common.CurrentUser;
 import com.tzme.helpdesk.domain.SolutionCode;
 import com.tzme.helpdesk.domain.User;
+import com.tzme.helpdesk.dto.DutySettings;
 import com.tzme.helpdesk.mapper.SolutionCodeMapper;
 import com.tzme.helpdesk.mapper.UserMapper;
 import com.tzme.helpdesk.security.LoginUser;
@@ -40,8 +41,11 @@ public class MetaController {
     @GetMapping("/runtime")
     public ApiResponse<Map<String,Object>> runtime() {
         var s = settings.get();
+        var duty = s.getDuty();
+        if (!CurrentUser.require().hasPermission("stats.view"))
+            duty = new DutySettings(List.of(), duty.hotline(), duty.hotlineNote());
         return ApiResponse.ok(Map.of("maxAttachments",s.getMaxAttachments(),"maxUploadMb",s.getMaxUploadMb(),
-                "kbRecommendEnabled",s.getKbRecommendEnabled(),"requireSolutionCode",s.getRequireSolutionCode()));
+                "kbRecommendEnabled",s.getKbRecommendEnabled(),"requireSolutionCode",s.getRequireSolutionCode(),"duty",duty));
     }
 
     @GetMapping("/solution-codes")

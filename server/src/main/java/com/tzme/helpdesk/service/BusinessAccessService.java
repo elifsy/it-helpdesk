@@ -5,6 +5,7 @@ import com.tzme.helpdesk.common.CurrentUser;
 import com.tzme.helpdesk.domain.*;
 import com.tzme.helpdesk.mapper.*;
 import com.tzme.helpdesk.security.LoginUser;
+import com.tzme.helpdesk.security.Roles;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -15,6 +16,7 @@ public class BusinessAccessService {
     private final TicketMapper tickets;
     private final AssetMapper assets;
     private final AssetRequestMapper requests;
+    private final MissingReportMapper missingReports;
 
     public void check(String type, String no, boolean write) {
         LoginUser u = CurrentUser.require();
@@ -41,6 +43,12 @@ public class BusinessAccessService {
                 if (a == null) throw new BizException(404, "资产不存在");
                 allowed = u.hasPermission("asset.view") && (!write || u.hasPermission("asset.create") || u.hasPermission("request.approve")
                         || u.name().equals(a.getUserName()) || u.name().equals(a.getBorrower()));
+            }
+            case "MISSING_REPORT" -> {
+                MissingReport report = missingReports.find(no);
+                if (report == null) throw new BizException(404, "补报登记不存在");
+                allowed = !write && (Roles.isItOrAdmin(u.role())
+                        || (u.id().equals(report.getRequesterId()) && !"CANCELLED".equals(report.getStatus())));
             }
             default -> throw new BizException("不支持的附件业务类型");
         }

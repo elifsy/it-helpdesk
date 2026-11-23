@@ -18,7 +18,7 @@ public class AuthController {
 
     @GetMapping("/config")
     public ApiResponse<java.util.Map<String, Object>> config() {
-        return ApiResponse.ok(java.util.Map.of("demoEnabled", !props.getDingtalk().isEnabled(),
+        return ApiResponse.ok(java.util.Map.of("demoEnabled", !props.getDingtalk().isEnabled() || props.getDingtalk().isDemoLogin(),
                 "corpId", props.getDingtalk().getCorpId()));
     }
 

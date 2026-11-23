@@ -60,6 +60,8 @@ helpdesk:
   dingtalk:
     # 本地/演示默认关闭，关闭时使用 X-Demo-User 头或默认演示账号
     enabled: ${DINGTALK_ENABLED:false}
+    # 仅本地联调：true 时钉钉接口走真实环境，但登录仍可用演示账号切换（生产必须 false）
+    demo-login: ${DINGTALK_DEMO_LOGIN:false}
     corp-id: ${DINGTALK_CORP_ID:}
     app-key: ${DINGTALK_APP_KEY:}
     app-secret: ${DINGTALK_APP_SECRET:}
@@ -83,7 +85,7 @@ helpdesk:
   upload:
     # 附件落盘目录；生产建议挂载独立数据盘
     dir: ${UPLOAD_DIR:./data/uploads}
-  demo-user: ${DEMO_USER:张伟}
+  demo-user: ${DEMO_USER:谈帥宏}
 
 logging:
   level:

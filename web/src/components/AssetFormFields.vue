@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { type AssetFormValue, NEW_ASSET_STATUSES } from '../utils/asset-form'
+import { type AssetFormValue, ASSET_WARRANTY_OPTIONS, NEW_ASSET_STATUSES } from '../utils/asset-form'
 import type { AssetCategory } from '../api'
 import { watch } from 'vue'
+import DeviceIconPicker from './DeviceIconPicker.vue'
 
 const props = withDefaults(defineProps<{
   form: AssetFormValue
@@ -21,13 +22,19 @@ watch([() => props.form.location, () => props.form.status, () => props.disabled]
     <label class="field wide">设备名称<i>*</i><input v-model="form.name" class="inp" required maxlength="128" aria-label="设备名称" placeholder="如：办公笔记本" /></label>
     <label class="field">型号<input v-model="form.model" class="inp" maxlength="128" aria-label="设备型号" placeholder="如：ThinkPad T14s Gen 5" /></label>
     <label class="field">资产分类<i>*</i><select v-model="form.category" class="sel" required :aria-label="categoryLabel"><option value="" disabled>请选择分类</option><option v-for="c in categories" :key="c.id" :value="c.name">{{ c.name }}</option></select><slot name="category-actions" /></label>
+    <label class="field">ERP资产编号<input v-model="form.erpNo" class="inp" maxlength="32" aria-label="ERP资产编号" placeholder="选填" /></label>
     <label class="field">SN 序列号<input v-model="form.sn" class="inp" maxlength="64" aria-label="SN序列号" /></label>
     <label class="field">存放位置<input v-model="form.location" class="inp" maxlength="64" aria-label="存放位置" placeholder="如：A座 1F 备件库" /><span class="hint">待入库设备填写位置后，自动设为闲置。</span></label>
     <label class="field">购置日期<input v-model="form.buyDate" class="inp" type="date" aria-label="购置日期" /></label>
     <label class="field">维保到期<input v-model="form.warrantyEnd" class="inp" type="date" :min="form.buyDate || undefined" aria-label="维保到期" /></label>
-    <label class="field">维保方式<input v-model="form.warranty" class="inp" maxlength="32" list="warranty-options" aria-label="维保方式" /><datalist id="warranty-options"><option>厂商保修</option><option>自保</option><option>已过保</option></datalist></label>
+    <label class="field">维保方式<input v-model="form.warranty" class="inp" maxlength="32" list="warranty-options" aria-label="维保方式" /><datalist id="warranty-options"><option v-for="option in ASSET_WARRANTY_OPTIONS" :key="option" :value="option" /></datalist></label>
     <label class="field">设备状态<i>*</i><select v-model="form.status" class="sel" required :disabled="statuses.length === 1" aria-label="设备状态"><option v-for="state in statuses" :key="state" :value="state">{{ state }}</option></select></label>
     <p v-if="statuses.length === 1" class="hint wide">该设备已分配或借出，状态随资产申请流程更新。</p>
+    <div class="field wide">
+      <span>卡片图标 <span class="hint-inline">不选则按设备名称与分类自动匹配</span></span>
+      <DeviceIconPicker v-model="form.icon" :category="form.category" :name="form.name" :disabled="disabled"
+        label="选择资产卡片图标" />
+    </div>
     <label class="field wide">备注<textarea v-model="form.remark" class="ta" maxlength="255" aria-label="设备备注" /></label>
   </fieldset>
 </template>
@@ -36,6 +43,7 @@ watch([() => props.form.location, () => props.form.status, () => props.disabled]
 .asset-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; min-width:0; border:0; margin:0; padding:0; }
 .field { display:flex; flex-direction:column; gap:7px; font-size:12px; min-width:0; position:relative; }
 .field i { color:#e35050; font-style:normal; position:absolute; margin-left:52px; top:0; }
-.wide { grid-column:1/-1; }.hint { color:var(--t2); font-size:12px; line-height:1.8; margin:0; }
+.wide { grid-column:1/-1; }
+.hint-inline { color:var(--t3); font-size:11px; margin-left:6px; }.hint { color:var(--t2); font-size:12px; line-height:1.8; margin:0; }
 @media(max-width:520px) { .asset-fields { grid-template-columns:1fr; }.wide { grid-column:auto; } }
 </style>

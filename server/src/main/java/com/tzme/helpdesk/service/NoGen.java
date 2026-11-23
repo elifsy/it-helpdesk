@@ -1,5 +1,6 @@
 package com.tzme.helpdesk.service;
 
+import com.tzme.helpdesk.common.BizException;
 import com.tzme.helpdesk.config.HelpdeskProperties;
 import com.tzme.helpdesk.mapper.SeqMapper;
 import lombok.RequiredArgsConstructor;
@@ -10,6 +11,7 @@ import org.springframework.stereotype.Component;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.Locale;
 
 /**
  * 单号生成。
@@ -26,6 +28,15 @@ public class NoGen {
     private final StringRedisTemplate redis;
     private final HelpdeskProperties props;
     private final SeqMapper seqMapper;
+
+    /** 调用方持有台账写锁，按已保存的同日资产编号分配下一个序号。 */
+    public String nextAsset() {
+        String day = LocalDate.now().format(DAY);
+        String max = seqMapper.maxAssetNo(day);
+        int next = max == null ? 1 : Integer.parseInt(max.substring(max.lastIndexOf('-') + 1)) + 1;
+        if (next > 99999) throw new BizException(409, "今日资产编号已用完");
+        return "ZC-" + day + "-" + String.format(Locale.ROOT, "%05d", next);
+    }
 
     /** 单机取号串行化，避免并发拿到同一个号撞唯一索引 */
     public synchronized String next(String prefix) {
@@ -48,7 +59,11 @@ public class NoGen {
 
     private int nextFromDb(String prefix, String day) {
         try {
-            String max = "IT".equals(prefix) ? seqMapper.maxTicketNo(day) : seqMapper.maxAssetRequestNo(day);
+            String max = switch (prefix) {
+                case "IT" -> seqMapper.maxTicketNo(day);
+                case "PR" -> seqMapper.maxPurchaseNo(day);
+                default -> seqMapper.maxAssetRequestNo(day);
+            };
             if (max == null || max.length() < 4) {
                 return 1;
             }

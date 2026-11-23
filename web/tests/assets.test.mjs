@@ -28,10 +28,10 @@ test('replacement shows only the current user owned equipment in the selected ca
   assert.deepEqual(eligibleAssets(assets, 'REPLACE', '张伟', '终端').map(a => a.no), ['PC-MINE'])
   assert.equal(eligibleAssets(assets, 'REPLACE', '张伟', '打印复印').length, 0)
 })
-test('return shows only the current user borrowed equipment and supports an empty category', () => {
+test('return shows the current user owned or borrowed equipment and supports an empty category', () => {
   assert.deepEqual(eligibleAssets(assets, 'RETURN', '张伟', '打印复印').map(a => a.no), ['PRINT-BORROWED'])
-  assert.equal(eligibleAssets(assets, 'RETURN', '张伟', '终端').length, 0)
-  assert.equal(eligibleAssets(assets, 'RETURN', '张伟', '').length, 1)
+  assert.deepEqual(eligibleAssets(assets, 'RETURN', '张伟', '终端').map(a => a.no), ['PC-MINE'])
+  assert.deepEqual(eligibleAssets(assets, 'RETURN', '张伟', '').map(a => a.no), ['PC-MINE', 'PRINT-BORROWED'])
 })
 test('inconsistent allocation and scrapped equipment are not offered for receive or borrow', () => {
   for (const asset of [

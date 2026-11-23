@@ -12,19 +12,21 @@ import java.util.List;
 @Mapper
 public interface NotifyMapper {
 
-    @Insert("insert into it_notify(to_user,title,content,type,ref_no) " +
-            "values(#{toUser},#{title},#{content},#{type},#{refNo})")
+    String FOR_RECIPIENT = "(recipient_id = #{userId} or (recipient_id is null and to_user = #{user}))";
+
+    @Insert("insert into it_notify(to_user,recipient_id,title,content,type,ref_no) " +
+            "values(#{toUser},#{recipientId},#{title},#{content},#{type},#{refNo})")
     int insert(Notify n);
 
-    @Select("select * from it_notify where to_user = #{user} order by id desc limit 50")
-    List<Notify> listByUser(@Param("user") String user);
+    @Select("select * from it_notify where " + FOR_RECIPIENT + " order by id desc limit 50")
+    List<Notify> listByUser(@Param("userId") Long userId, @Param("user") String user);
 
-    @Select("select count(*) from it_notify where to_user = #{user} and is_read = 0")
-    long countUnread(@Param("user") String user);
+    @Select("select count(*) from it_notify where " + FOR_RECIPIENT + " and is_read = 0")
+    long countUnread(@Param("userId") Long userId, @Param("user") String user);
 
-    @Update("update it_notify set is_read = 1 where id = #{id} and to_user = #{user}")
-    int markRead(@Param("id") Long id, @Param("user") String user);
+    @Update("update it_notify set is_read = 1 where id = #{id} and " + FOR_RECIPIENT)
+    int markRead(@Param("id") Long id, @Param("userId") Long userId, @Param("user") String user);
 
-    @Update("update it_notify set is_read = 1 where to_user = #{user}")
-    int markAllRead(@Param("user") String user);
+    @Update("update it_notify set is_read = 1 where " + FOR_RECIPIENT)
+    int markAllRead(@Param("userId") Long userId, @Param("user") String user);
 }

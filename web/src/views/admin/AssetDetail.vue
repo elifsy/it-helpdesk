@@ -7,6 +7,8 @@ import { useAuthStore } from '../../stores/auth'
 import { ASSET_STATUS_CLASS } from '../../utils/dict'
 import { toast } from '../../utils/toast'
 import AssetFormFields from '../../components/AssetFormFields.vue'
+import DeviceIcon from '../../components/DeviceIcon.vue'
+import { autoIconKey, iconClass, iconLabel } from '../../utils/deviceIcons'
 
 const route = useRoute()
 const router = useRouter()
@@ -28,8 +30,8 @@ const qrError = ref('')
 const qrContent = ref('')
 const canvasRef = ref<HTMLCanvasElement>()
 const form = reactive({
-  name: '', model: '', category: '', sn: '', location: '', buyDate: '', warranty: '',
-  warrantyEnd: '', status: '', remark: '', editToken: ''
+  erpNo: '', name: '', model: '', category: '', sn: '', location: '', buyDate: '', warranty: '',
+  warrantyEnd: '', status: '', remark: '', icon: '', editToken: ''
 })
 let loadVersion = 0
 const canEdit = computed(() => auth.can('asset.create'))
@@ -40,6 +42,7 @@ const backQuery = computed(() => ({
   ...(route.query.backKeyword ? { keyword: String(route.query.backKeyword) } : {})
 }))
 function back() { void router.push({ path: '/admin/assets', query: backQuery.value }) }
+function detailIcon() { return asset.value?.icon || autoIconKey(asset.value?.category, asset.value?.name) }
 function clearEditQuery() {
   if (route.query.edit) {
     const query = { ...route.query }; delete query.edit
@@ -70,9 +73,10 @@ function openEdit() {
   if (!asset.value || !canEdit.value || saving.value) return
   const current = asset.value
   Object.assign(form, {
+    erpNo: current.erpNo || '',
     name: current.name, model: current.model || '', category: current.category, sn: current.sn || '', location: current.location || '',
     buyDate: current.buyDate || '', warranty: current.warranty || '', warrantyEnd: current.warrantyEnd || '',
-    status: current.status, remark: current.remark || '', editToken: detail.value.editToken
+    status: current.status, remark: current.remark || '', icon: current.icon || '', editToken: detail.value.editToken
   })
   editError.value = ''
   showEdit.value = true
@@ -147,7 +151,12 @@ function downloadQr() {
 <template>
   <div class="asset-detail">
     <div class="detail-heading">
-      <div><button class="back-link" @click="back">‹ 返回资产台账</button><h2>{{ asset?.name || '设备详情' }}</h2><p class="mono muted">{{ asset?.no || route.params.no }}</p></div>
+      <div><button class="back-link" @click="back">‹ 返回资产台账</button>
+        <div class="detail-title">
+          <span v-if="asset" class="detail-icon" :class="iconClass(detailIcon())"><DeviceIcon :name="detailIcon()" /></span>
+          <div><h2>{{ asset?.name || '设备详情' }}</h2><p class="mono muted">{{ asset?.no || route.params.no }}<template v-if="asset"> · 图标：{{ asset.icon ? iconLabel(asset.icon) : '自动' }}</template></p></div>
+        </div>
+      </div>
       <div v-if="asset && !loading && !error" class="detail-actions">
         <button v-if="canEdit" class="btn pri" data-action="edit-asset" :disabled="saving" @click="openEdit">编辑设备</button>
         <button class="btn" data-action="asset-qrcode" @click="openQr">查看二维码</button>
@@ -162,6 +171,7 @@ function downloadQr() {
           <div class="section-heading"><h3>设备资料</h3><span v-if="!canEdit" class="pill b-gray">只读</span></div>
           <dl class="info-grid">
             <div><dt>资产编号</dt><dd class="mono">{{ asset.no }}</dd></div>
+            <div><dt>ERP资产编号</dt><dd class="mono">{{ asset.erpNo || '—' }}</dd></div>
             <div><dt>设备名称</dt><dd>{{ asset.name }}</dd></div>
             <div><dt>型号</dt><dd>{{ asset.model || '—' }}</dd></div>
             <div><dt>资产分类</dt><dd>{{ asset.category }}</dd></div>
@@ -225,6 +235,8 @@ function downloadQr() {
 </template>
 
 <style scoped>
+.detail-title { display:flex; align-items:center; gap:12px; }
+.detail-icon { flex:0 0 46px; width:46px; height:46px; border-radius:12px; padding:8px; }
 .detail-heading,.detail-actions,.section-heading,.history-title { display:flex; align-items:center; gap:10px; }
 .detail-heading { justify-content:space-between; align-items:flex-start; margin:0 0 20px; }.detail-actions { flex-wrap:wrap; justify-content:flex-end; padding-top:24px; }
 h2 { font-size:25px; margin:10px 0 6px; overflow-wrap:anywhere; }h3 { font-size:15px; margin:0; }.back-link { border:0; background:none; color:#0071e3; cursor:pointer; padding:0; font:inherit; font-size:12px; }

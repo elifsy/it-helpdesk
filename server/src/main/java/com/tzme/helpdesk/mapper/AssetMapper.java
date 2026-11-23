@@ -12,12 +12,15 @@ public interface AssetMapper {
 
     Asset findByNo(@Param("no") String no);
 
+    @org.apache.ibatis.annotations.Select("select no from it_asset where erp_no=#{erpNo}")
+    String findNoByErpNo(@Param("erpNo") String erpNo);
+
     @org.apache.ibatis.annotations.Select("select * from it_asset where no=#{no} for update")
     Asset findByNoForUpdate(@Param("no") String no);
 
     int update(Asset a);
 
-    @org.apache.ibatis.annotations.Update("update it_asset set name=#{name},model=#{model},category=#{category},sn=#{sn},location=#{location},buy_date=#{buyDate},warranty=#{warranty},warranty_end=#{warrantyEnd},status=#{status},remark=#{remark},updated_at=now() where no=#{no}")
+    @org.apache.ibatis.annotations.Update("update it_asset set erp_no=#{erpNo},name=#{name},model=#{model},category=#{category},sn=#{sn},location=#{location},buy_date=#{buyDate},warranty=#{warranty},warranty_end=#{warrantyEnd},status=#{status},remark=#{remark},icon=#{icon},updated_at=now() where no=#{no}")
     int updateDetails(Asset asset);
 
     List<Asset> list(@Param("status") String status,

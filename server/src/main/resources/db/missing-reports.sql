@@ -1,0 +1,15 @@
+CREATE TABLE IF NOT EXISTS it_missing_report (
+  no VARCHAR(32) NOT NULL PRIMARY KEY,
+  requester_id BIGINT NOT NULL,
+  requester_name VARCHAR(64) NOT NULL,
+  recorded_by VARCHAR(64) NOT NULL,
+  title VARCHAR(200) NOT NULL,
+  description VARCHAR(500) NOT NULL,
+  channel VARCHAR(12) NOT NULL,
+  completed_at DATETIME NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+  ticket_no VARCHAR(32) DEFAULT NULL,
+  cancel_reason VARCHAR(500) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_missing_report_requester (requester_id, status)
+);

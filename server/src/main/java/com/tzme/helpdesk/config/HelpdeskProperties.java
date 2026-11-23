@@ -24,6 +24,11 @@ public class HelpdeskProperties {
     @Data
     public static class DingTalk {
         private boolean enabled = false;
+        /**
+         * 仅本地联调用：钉钉接口照常走真实环境，但登录仍可用演示账号切换。
+         * 生产环境必须保持 false，否则任何人可以用姓名登录。
+         */
+        private boolean demoLogin = false;
         private String corpId = "";
         private String appKey = "";
         private String appSecret = "";
@@ -34,8 +39,13 @@ public class HelpdeskProperties {
         private String userInfoUrl = "https://oapi.dingtalk.com/topapi/v2/user/getuserinfo";
         private String userDetailUrl = "https://oapi.dingtalk.com/topapi/v2/user/get";
         private String workNotifyUrl = "https://oapi.dingtalk.com/topapi/message/corpconversation/asyncsend_v2";
+        private String leaveStatusUrl = "https://oapi.dingtalk.com/topapi/attendance/getleavestatus";
         private String deptListUrl = "https://oapi.dingtalk.com/topapi/v2/department/listsub";
         private String userListUrl = "https://oapi.dingtalk.com/topapi/v2/user/list";
+        /** 钉钉审批实例（发起 POST / 查询 GET 同一地址） */
+        private String approvalUrl = "https://api.dingtalk.com/v1.0/workflow/processInstances";
+        /** 按模板名称查询 processCode */
+        private String processByNameUrl = "https://oapi.dingtalk.com/topapi/process/get_by_name";
     }
 
     @Data

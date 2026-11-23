@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { assetApi, assetCategoryApi, assetRequestApi, ticketApi, type AssetCategory } from '../../api'
 import { useAuthStore } from '../../stores/auth'
+import { useMissingReportStore } from '../../stores/missingReports'
 import { eligibleAssets } from '../../utils/assets'
 import { REQ_STATUS_CLASS, REQ_STATUS_NAME, REQ_TYPE, remainText, statusName } from '../../utils/dict'
 import { isDingTalk, parseAssetNo, scanQrCode } from '../../utils/dingtalk'
@@ -10,9 +11,12 @@ import { toast } from '../../utils/toast'
 import { ticketQueueText } from '../../utils/ticketQueue'
 import { assetOperationPath } from '../../utils/asset-links'
 import AssetRequestFlow from '../../components/AssetRequestFlow.vue'
+import PurchaseFlow from '../../components/PurchaseFlow.vue'
 
 const router = useRouter()
 const auth = useAuthStore()
+const reportState = useMissingReportStore()
+const pendingReports = computed(() => reportState.summary?.pending || 0)
 const tickets = ref<any[]>([])
 const reqs = ref<any[]>([])
 const myRequests = ref<any[]>([])
@@ -21,13 +25,16 @@ const categories = ref<AssetCategory[]>([])
 const loading = ref(true)
 const assetsLoading = ref(true)
 const flow = ref<InstanceType<typeof AssetRequestFlow>>()
+const purchaseFlow = ref<InstanceType<typeof PurchaseFlow>>()
 
 const active = computed(() => tickets.value.filter((t) => !['CLOSED', 'REJECTED', 'CANCELLED'].includes(t.status)))
 const pending = computed(() => tickets.value.filter((t) => t.status === 'PENDING_CONFIRM'))
 const hero = computed(() => pending.value[0] || active.value[0])
 const myName = computed(() => auth.user?.name || '')
 /** 本人待审批申请涉及的设备，四个入口里不再可选 */
-const pendingNos = computed(() => myRequests.value.filter((r) => r.status === 'PENDING').map((r) => r.assetNo))
+const pendingNos = computed(() => myRequests.value
+  .filter((r) => r.status !== 'COMPLETED' && r.status !== 'REJECTED' && r.status !== 'CANCELLED')
+  .map((r) => r.assetNo))
 
 /** 与「资产服务」页同一套四个入口：标题取 REQ_TYPE，副标题显示可选设备数 */
 const quick = computed(() => (['RECEIVE', 'BORROW', 'REPLACE', 'RETURN'] as const).map((type) => ({
@@ -61,7 +68,15 @@ async function loadAssets() {
   }
 }
 
+/** 购入申请：与领用同一套选择弹窗；没有合适设备时走这条路 */
+function openPurchase() {
+  if (reportState.summary?.blocked) { void router.push('/missing-reports'); return }
+  if (!auth.can('request.create')) return
+  purchaseFlow.value?.open()
+}
+
 function openQuick(type: string) {
+  if (reportState.summary?.blocked) { void router.push('/missing-reports'); return }
   if (!auth.can('request.create')) return
   flow.value?.open(type)
 }
@@ -103,10 +118,20 @@ async function doScan() {
 <template>
   <div class="home">
     <div class="col-main">
-      <div class="greet">
-        <div class="eyebrow">内部 IT 服务台 · {{ auth.user?.deptName }}</div>
-        <div class="hi">你好，{{ auth.user?.name }}。</div>
-        <div class="sub">你有 {{ active.length }} 张工单处理中</div>
+      <div class="home-heading" :class="{ 'has-reminder': pendingReports }">
+        <div class="greet">
+          <div class="eyebrow">内部 IT 服务台 · {{ auth.user?.deptName }}</div>
+          <div class="hi">你好，{{ auth.user?.name }}。</div>
+          <div class="sub">你有 {{ active.length }} 张工单处理中</div>
+        </div>
+
+        <section v-if="pendingReports" class="report-reminder" aria-label="已完成事项待补报">
+          <div class="report-reminder-copy">
+            <b>{{ pendingReports }} 条已完成事项待补报</b>
+            <p>{{ reportState.summary?.blocked ? '请先补报，报修与资产服务已暂停。' : '请补交通过消息或电话临时处理的事项。' }}</p>
+          </div>
+          <router-link class="btn sm pri report-reminder-link" to="/missing-reports">查看并补报</router-link>
+        </section>
       </div>
 
       <router-link v-if="hero" class="hero" :to="'/ticket/' + encodeURIComponent(hero.no)" :aria-label="'查看工单 ' + hero.no + ' 的进度'">
@@ -130,6 +155,7 @@ async function doScan() {
           <div class="ic">＋</div>
           <div class="lt">
             <div class="l">报修</div>
+            <span v-if="pendingReports" class="pill b-orange">{{ pendingReports }} 条待补报</span>
             <div class="ldesc">描述故障位置和现象，系统自动定级并开始计时</div>
           </div>
           <span class="arrow">›</span>
@@ -156,7 +182,17 @@ async function doScan() {
           <div class="qi">{{ REQ_TYPE[q.type].icon }}</div>
           <div class="sp">
             <div class="qt">{{ q.label }}</div>
+          <span v-if="pendingReports" class="pill b-orange">{{ pendingReports }} 条待补报</span>
             <div class="qm" :title="q.count ? `可选 ${q.count} 台设备` : '暂无可选设备'">{{ q.count ? `可选 ${q.count} 台` : '暂无可选' }}</div>
+          </div>
+          <span style="color: var(--t4)">›</span>
+        </div>
+        <div v-if="auth.can('request.create')" class="qcard purchase-card" aria-label="购入申请" @click="openPurchase">
+          <div class="qi">⊕</div>
+          <div class="sp">
+            <div class="qt">购入申请</div>
+          <span v-if="pendingReports" class="pill b-orange">{{ pendingReports }} 条待补报</span>
+            <div class="qm">没有合适的设备可领？申请采购一台新的</div>
           </div>
           <span style="color: var(--t4)">›</span>
         </div>
@@ -171,6 +207,8 @@ async function doScan() {
         :pending-nos="pendingNos"
         @submitted="onSubmitted"
       />
+
+      <PurchaseFlow ref="purchaseFlow" @submitted="loadAssets" />
 
       <div class="sec-t">
         <h3>最近工单</h3>
@@ -189,13 +227,6 @@ async function doScan() {
         </div>
         <div v-if="ticketQueueText(t)" class="ticket-queue">{{ ticketQueueText(t) }}</div>
       </router-link>
-
-      <div class="hotline">
-        <span class="muted">客服热线</span>
-        <b style="color: var(--brand)">内线 8300</b>
-        <span class="sp" />
-        <span class="small muted">系统故障时使用</span>
-      </div>
     </div>
 
     <aside class="col-side">
@@ -220,11 +251,49 @@ async function doScan() {
         <span class="sp">知识库：常见问题先自助</span>
         <span style="color: var(--t4)">›</span>
       </div>
+
     </aside>
   </div>
 </template>
 
 <style scoped>
+.home-heading {
+  display: grid;
+  gap: 8px;
+}
+.greet,
+.report-reminder-copy {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.report-reminder {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  padding: 14px 16px;
+  border: 1px solid #ffd5c7;
+  border-radius: 14px;
+  background: #fff6f2;
+}
+.report-reminder-copy {
+  flex: 1 1 11rem;
+}
+.report-reminder p {
+  margin: 5px 0 0;
+  font-size: 13px;
+  color: var(--t2);
+}
+.report-reminder .report-reminder-link {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+}
 .hero-queue { margin-top:12px; padding-top:10px; border-top:1px solid rgba(255,255,255,.25); font-size:12px; line-height:1.6; }
 .ticket-queue { margin-top:8px; color:var(--brand); font-size:12px; line-height:1.6; }
 .greet {
@@ -281,6 +350,21 @@ async function doScan() {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 9px;
   margin-top: 9px;
+}
+/* 购入申请：整行横跨，视觉上作为四张卡的补充入口 */
+.purchase-card {
+  grid-column: 1 / -1;
+  border: 1px dashed #cfd9e6;
+  box-shadow: none;
+  background: #fcfdff;
+}
+.purchase-card:hover {
+  border-color: #94bff1;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.06);
+}
+.purchase-card .qi {
+  background: #eef2f7;
+  color: var(--t2);
 }
 /* 资产入口卡样式在全局 main.css（.qcard），与「资产服务」页共用 */
 .entry {
@@ -360,18 +444,6 @@ async function doScan() {
   color: var(--t3);
   margin-top: 3px;
 }
-.hotline {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: #fff;
-  border-radius: 9px;
-  padding: 10px 13px;
-  margin-top: 12px;
-  font-size: 12px;
-  box-shadow: var(--shadow);
-}
-
 /* ---------------- PC 两栏 ---------------- */
 @media (min-width: 900px) {
   .entry.scan-entry { display: none; }
@@ -380,6 +452,16 @@ async function doScan() {
     grid-template-columns: minmax(0, 1fr) 348px;
     gap: 18px;
     align-items: start;
+  }
+  .col-main {
+    container: employee-home / inline-size;
+  }
+  @container employee-home (min-width: 610px) {
+    .home-heading.has-reminder {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 24rem);
+      column-gap: 24px;
+      align-items: center;
+    }
   }
   .greet {
     padding-bottom: 14px;
@@ -465,13 +547,9 @@ async function doScan() {
     position: sticky;
     top: 84px;
   }
-  .hotline {
-    margin-top: 14px;
-  }
 }
 
 /* ===== A · Quiet ===== */
-.greet { margin-bottom: 6px; }
 .greet .eyebrow {
   font-size: 11.5px; color: var(--t3); letter-spacing: 0.07em;
   text-transform: uppercase; margin-bottom: 10px;

@@ -34,6 +34,13 @@ const submitting = ref(false)
 const pickerDialog = ref<HTMLElement>()
 let pickerOverflow: string | null = null
 const form = reactive({ reason: '', expectReturn: '' })
+/* 更换申请：提交时预选替换设备（钉钉审批端选不了台账） */
+const spareNo = ref('')
+const spareCategory = ref('')
+const showSpare = ref(false)
+const spareAssets = computed(() => props.assets.filter(a =>
+  ['闲置', '待入库'].includes(a.status) && !a.userName && !a.borrower && a.no !== pickNo.value))
+const spareSelected = computed(() => props.assets.find(a => a.no === spareNo.value))
 
 const pickAssets = computed(() => eligibleAssets(props.assets, pickType.value, myName.value, '', props.pendingNos || []))
 const pickList = computed(() => eligibleAssets(props.assets, pickType.value, myName.value, pickCategory.value, props.pendingNos || []))
@@ -67,6 +74,9 @@ function open(type: string, no?: string) {
   pickNo.value = list.some(a => a.no === no) ? no! : ''
   form.reason = ''
   form.expectReturn = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10)
+  spareNo.value = ''
+  spareCategory.value = ''
+  showSpare.value = false
   showApply.value = false
   showPick.value = true
 }
@@ -95,6 +105,7 @@ async function submitApply() {
   if (!asset || !pickList.value.some(a => a.no === asset.no)) { toast('请选择可申请的设备'); return }
   if (form.reason.trim().length < 4) { toast('请填写申请事由（至少 4 个字）'); return }
   if (pickType.value === 'BORROW' && !form.expectReturn) { toast('请选择归还日期'); return }
+  if (pickType.value === 'REPLACE' && !spareNo.value) { toast('更换申请请先选择替换设备'); return }
   submitting.value = true
   try {
     const result = await assetRequestApi.create({
@@ -102,7 +113,8 @@ async function submitApply() {
       assetNo: asset.no,
       category: asset.category,
       reason: form.reason,
-      expectReturn: pickType.value === 'BORROW' ? form.expectReturn : undefined
+      expectReturn: pickType.value === 'BORROW' ? form.expectReturn : undefined,
+      newAssetNo: pickType.value === 'REPLACE' ? spareNo.value : undefined
     })
     submitting.value = false
     showPick.value = false
@@ -158,6 +170,34 @@ defineExpose({ open, close: closeFlow })
     </div>
   </div>
 
+  <!-- 更换：选择替换设备 -->
+  <div v-if="showSpare" class="mask asset-picker-mask" @click.self="showSpare = false" @keydown.esc="showSpare = false">
+    <div class="dlg asset-selection-dialog" role="dialog" aria-modal="true" aria-labelledby="spare-title">
+      <div class="dlg-h">
+        <div>
+          <h3 id="spare-title">选择替换设备</h3>
+          <p>只列出闲置且无人使用的设备，选中后作为更换的新机</p>
+        </div>
+        <button type="button" class="picker-close" aria-label="关闭替换设备选择" @click="showSpare = false">×</button>
+      </div>
+      <div class="asset-selection-body">
+        <AssetPicker v-model="spareNo" v-model:category="spareCategory" :assets="spareAssets"
+          :categories="categories" :loading="!!loading" category-label="替换设备分类"
+          empty-text="当前没有闲置可替换的设备，请先归还或新增备机。" />
+      </div>
+      <div class="dlg-f asset-selection-footer">
+        <div class="selection-summary">
+          <b>{{ spareSelected ? spareSelected.name : '请选择替换设备' }}</b>
+          <span>{{ spareNo || '选中后点「确定」' }}</span>
+        </div>
+        <div class="picker-footer-actions">
+          <button class="btn" @click="showSpare = false">取消</button>
+          <button class="btn pri" :disabled="!spareNo" @click="showSpare = false">确定</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- 申请表单 -->
   <div v-if="showApply" class="mask" @click.self="closeFlow">
     <div class="dlg">
@@ -176,6 +216,16 @@ defineExpose({ open, close: closeFlow })
         <div v-if="pickType === 'BORROW'" class="fld" style="margin-bottom: 0">
           <label class="lb">预计归还日期<i>*</i></label>
           <input v-model="form.expectReturn" type="date" class="inp" />
+        </div>
+        <div v-if="pickType === 'REPLACE'" class="fld" style="margin-bottom: 0">
+          <label class="lb">替换设备<i>*</i></label>
+          <div class="row" style="gap:8px;align-items:center">
+            <button type="button" class="btn" style="flex:1;justify-content:flex-start" @click="showSpare = true">
+              {{ spareSelected ? spareSelected.name + ' · ' + spareNo : '选择一台闲置设备作为替换机' }}
+            </button>
+            <button v-if="spareNo" type="button" class="btn sm" @click="spareNo = ''">清除</button>
+          </div>
+          <div class="small muted" style="margin-top:6px">审批端无法挑选台账设备，需在此预选；通过后自动把使用人换到新机，旧机回库并转移未结工单。</div>
         </div>
       </div>
       <div class="dlg-f">

@@ -8,10 +8,14 @@ import {
   kbApi,
   metaApi,
   notifyApi,
+  serviceContactApi,
   statsApi,
-  ticketApi
+  ticketApi,
+  type ServiceContactRoster
 } from '../api'
+import ContactLeaveStatus from '../components/ContactLeaveStatus.vue'
 import { useAuthStore } from '../stores/auth'
+import { useMissingReportStore } from '../stores/missingReports'
 import {
   DEMO_USERS,
   MENUS,
@@ -28,6 +32,7 @@ import { isDingTalk } from '../utils/dingtalk'
 import { toast, toastText } from '../utils/toast'
 
 const route = useRoute()
+const reportState = useMissingReportStore()
 const router = useRouter()
 const auth = useAuthStore()
 
@@ -35,8 +40,75 @@ const workRole = computed<WorkRole>(() => roleFromRoles(auth.roles))
 const meta = computed(() => ROLE_META[workRole.value])
 const groups = computed(() => MENUS[workRole.value].map(g => ({ ...g, items: g.items.filter(m => routeAllowed(auth.roles, m.path, auth.permissions) && (!m.permission || auth.can(m.permission))) })).filter(g => g.items.length))
 const tabs = computed(() => TABS[workRole.value].filter(t => routeAllowed(auth.roles, t.path, auth.permissions)))
+
+/* ---------- 侧栏分组折叠（IT / 管理员的导航项较多，允许按组收起） ---------- */
+const canFoldNav = computed(() => workRole.value !== 'emp')
+const foldKey = computed(() => 'it_helpdesk_nav_folded_' + workRole.value)
+const folded = ref<Record<string, boolean>>({})
+/** 首次进入（没有本地记录）时，只展开当前页面所在的分组，其余先折叠，避免导航过长 */
+function defaultFolded() {
+  const map: Record<string, boolean> = {}
+  const active = groups.value.find(g => g.items.some(m => isOn(m.path)))
+  for (const g of groups.value) map[g.title] = !!active && g.title !== active.title
+  return map
+}
+function loadFolded() {
+  const raw = localStorage.getItem(foldKey.value)
+  if (raw) {
+    try { folded.value = JSON.parse(raw) || {}; return } catch { /* 损坏则回退默认 */ }
+  }
+  folded.value = defaultFolded()
+}
+function persistFolded() {
+  try { localStorage.setItem(foldKey.value, JSON.stringify(folded.value)) } catch { /* 隐私模式忽略 */ }
+}
+watch(foldKey, loadFolded, { immediate: true })
+function toggleGroup(title: string) {
+  folded.value = { ...folded.value, [title]: !folded.value[title] }
+  persistFolded()
+}
+function groupActive(items: { path: string }[]) {
+  return items.some(m => isOn(m.path))
+}
+const allFolded = computed(() => canFoldNav.value && groups.value.length > 0 && groups.value.every(g => folded.value[g.title]))
+function toggleAllGroups() {
+  const next: Record<string, boolean> = {}
+  if (!allFolded.value) for (const g of groups.value) next[g.title] = true
+  folded.value = next
+  persistFolded()
+}
+/** 进入某个页面时，自动把它所在的分组展开，避免被折叠挡住在用的入口 */
+watch(() => route.path, () => {
+  if (!canFoldNav.value) return
+  const hit = groups.value.find(g => g.items.some(m => isOn(m.path)))
+  if (hit && folded.value[hit.title]) folded.value = { ...folded.value, [hit.title]: false }
+}, { immediate: true })
 const title = computed(() => titleFor(workRole.value, route.fullPath))
-const personalPage = computed(() => ['/home', '/new', '/tickets', '/assets', '/kb'].includes(route.path) || route.path.startsWith('/ticket/'))
+const personalPage = computed(() => ['/home', '/new', '/tickets', '/assets', '/kb', '/missing-reports'].includes(route.path) || route.path.startsWith('/ticket/'))
+const isHome = computed(() => route.path === '/home')
+const contactRoster = ref<ServiceContactRoster>()
+watch([isHome, () => auth.user?.id], async ([home, userId], _, onCleanup) => {
+  contactRoster.value = undefined
+  if (!home || !userId) return
+  let current = true
+  onCleanup(() => { current = false })
+  try {
+    const roster = await serviceContactApi.display()
+    if (current) contactRoster.value = roster
+  } catch {
+    if (!current) return
+    try {
+      const { duty } = await metaApi.runtime()
+      if (current && duty) contactRoster.value = { contacts: [], hotline: duty.hotline, hotlineNote: duty.hotlineNote }
+    } catch {
+      // 联系方式加载失败时，首页其他功能仍可使用。
+    }
+  }
+}, { immediate: true })
+const reportRestrictedPage = computed(() => route.path === '/new' || route.path === '/assets')
+watch([() => auth.user?.id, () => route.path], ([id]) => {
+  if (!id || ['/home', '/new', '/assets', '/missing-reports'].includes(route.path)) void reportState.refresh(id)
+}, { immediate: true })
 const inDingTalk = isDingTalk()
 
 /* ---------- 角标 / 通知 ---------- */
@@ -368,19 +440,35 @@ watch([workRole, personalPage], loadAll)
     <div class="layout">
       <!-- 侧栏：唯一主导航 -->
       <aside class="side">
+        <button v-if="canFoldNav" type="button" class="nav-fold-all" @click="toggleAllGroups">
+          {{ allFolded ? '展开全部分组' : '收起全部分组' }}
+        </button>
         <template v-for="(g, i) in groups" :key="g.title">
-          <div class="grp" :class="{ first: i === 0 }">{{ g.title }}</div>
           <button
-            v-for="m in g.items"
-            :key="m.path"
-            class="mi"
-            :class="{ on: isOn(m.path) }"
-            @click="router.push(m.path)"
+            type="button"
+            class="grp"
+            :class="{ first: i === 0 && !canFoldNav, folded: !!folded[g.title], active: groupActive(g.items) }"
+            :aria-expanded="canFoldNav ? !folded[g.title] : undefined"
+            :title="canFoldNav ? (folded[g.title] ? '展开该分组' : '收起该分组') : g.title"
+            @click="canFoldNav && toggleGroup(g.title)"
           >
-            <span class="ic">{{ m.icon }}</span>
-            <span>{{ m.label }}</span>
-            <span v-if="badgeOf(m.badge)" class="n">{{ badgeOf(m.badge) }}</span>
+            <span>{{ g.title }}</span>
+            <span v-if="canFoldNav" class="gcount">{{ g.items.length }}</span>
+            <span v-if="canFoldNav" class="chev" aria-hidden="true">›</span>
           </button>
+          <div v-show="!canFoldNav || !folded[g.title]" class="grp-items">
+            <button
+              v-for="m in g.items"
+              :key="m.path"
+              class="mi"
+              :class="{ on: isOn(m.path) }"
+              @click="router.push(m.path)"
+            >
+              <span class="ic">{{ m.icon }}</span>
+              <span>{{ m.label }}</span>
+              <span v-if="badgeOf(m.badge)" class="n">{{ badgeOf(m.badge) }}</span>
+            </button>
+          </div>
         </template>
         <div class="me">
           <b>{{ auth.user?.name }}</b>
@@ -392,16 +480,32 @@ watch([workRole, personalPage], loadAll)
       </aside>
 
       <!-- 主栏 -->
-      <main class="main"><router-view /></main>
+      <main class="main">
+        <div v-if="reportRestrictedPage && reportState.loadedFor !== auth.user?.id" class="empty" role="status">正在检查待补报事项…</div>
+        <section v-else-if="reportRestrictedPage && reportState.summary?.blocked" class="card report-block">
+          <h2>请先补报已完成事项</h2>
+          <p>你有 {{ reportState.summary.pending }} 条事项待补报。待补报数量降至 {{ reportState.summary.limit }} 条及以下后，可恢复报修和资产服务。</p>
+          <router-link class="btn pri" to="/missing-reports">查看并补报</router-link>
+        </section>
+        <template v-else>
+          <div v-if="reportRestrictedPage && reportState.summary?.pending" class="card report-notice">
+            <span class="pill b-orange">{{ reportState.summary.pending }} 条待补报</span>
+            <router-link to="/missing-reports">查看已完成事项</router-link>
+          </div>
+          <router-view />
+        </template>
+      </main>
 
       <!-- 右栏：不打断主任务的辅助信息，数据均来自真实接口 -->
-      <aside class="rail">
+      <aside class="rail" :class="{ 'home-rail': isHome }">
         <template v-if="personalPage || workRole === 'emp'">
           <div class="panel">
             <h4>我的申请</h4>
             <div v-if="!reqs.length" class="empty sm">暂无申请</div>
             <div v-for="r in reqs" :key="r.id" class="line">
-              <span>{{ REQ_TYPE[r.type]?.name || r.typeName || r.type }}</span><span class="sp" />
+              <span>{{ REQ_TYPE[r.type]?.name || r.typeName || r.type }}</span>
+              <span v-if="r.status === 'PENDING' && r.dingInstanceId" class="tag">钉钉</span>
+              <span class="sp" />
               <span class="tag" :class="r.status === 'APPROVED' || r.status === 'COMPLETED' ? 'g' : ''">
                 {{ REQ_STATUS_NAME[r.status] || r.statusName || r.status }}
               </span>
@@ -416,6 +520,18 @@ watch([workRole, personalPage], loadAll)
               <span><b>{{ k.title }}</b><small>{{ k.category }} · 浏览 {{ k.views || 0 }}</small></span>
             </button>
           </div>
+          <section v-if="contactRoster && (contactRoster.contacts.length || contactRoster.hotline)" class="panel service-contacts">
+            <h4>IT 服务联系人</h4>
+            <ul v-if="contactRoster.contacts.length" class="service-contact-list">
+              <li v-for="(contact, index) in contactRoster.contacts" :key="index">
+                <span>{{ contact.member.position }} {{ contact.member.name }}</span>
+                <ContactLeaveStatus :contact="contact" />
+              </li>
+            </ul>
+            <p v-if="contactRoster.hotline" class="small muted service-hotline">
+              热线 <strong>{{ contactRoster.hotline }}</strong><span v-if="contactRoster.hotlineNote">（{{ contactRoster.hotlineNote }}）</span>
+            </p>
+          </section>
         </template>
 
         <template v-else-if="workRole === 'it' || workRole === 'viewer' || workRole === 'admin'">
@@ -466,7 +582,6 @@ watch([workRole, personalPage], loadAll)
           </div>
         </template> -->
 
-        <!-- <div class="hotline"><span>客服热线</span><b>内线 8300</b><small>系统故障时使用</small></div> -->
       </aside>
     </div>
 
@@ -503,6 +618,9 @@ watch([workRole, personalPage], loadAll)
 </template>
 
 <style scoped>
+.report-block { max-width:680px; padding:20px; }
+.report-block p { margin:12px 0 16px; line-height:1.6; }
+.report-notice { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:12px; }
 .shell {
   min-height: 100vh;
   background: #f5f5f7;
@@ -595,8 +713,20 @@ watch([workRole, personalPage], loadAll)
   align-items: start;
 }
 .side { position: sticky; top: 100px; }
-.grp { font-size: 10.5px; letter-spacing: 0.12em; color: #a1a1a6; padding: 0 14px 9px; text-transform: uppercase; }
+.nav-fold-all { display:block; width:100%; border:0; background:transparent; text-align:right; padding:0 14px 10px; font-family:inherit; font-size:10.5px; letter-spacing:.04em; color:#a1a1a6; cursor:pointer; }
+.nav-fold-all:hover { color:#0071e3; }
+.grp { display:flex; align-items:center; gap:6px; width:100%; border:0; background:transparent; font-family:inherit; text-align:left;
+  font-size: 12.5px; font-weight: 600; letter-spacing: 0.02em; color: #48484c; padding: 0 14px 10px; cursor:default; }
 .grp:not(.first) { margin-top: 20px; }
+.side .grp[aria-expanded] { cursor:pointer; }
+.side .grp[aria-expanded]:hover { color:#1d1d1f; }
+.side .grp[aria-expanded]:hover .chev { color:#0071e3; }
+.grp .gcount { font-size:10.5px; letter-spacing:0; color:#a3a3a9; font-weight:500; }
+.grp .chev { margin-left:auto; font-size:13px; line-height:1; color:#b4b4ba; transform:rotate(90deg); transition:transform .15s ease; }
+.grp.folded .chev { transform:rotate(0deg); }
+.grp.active { color:#0071e3; }
+.grp.active .gcount { color:#0071e3; }
+.grp-items { display:block; }
 .mi {
   width: 100%; display: flex; align-items: center; gap: 10px; padding: 9px 14px; border: 0;
   border-radius: 12px; font-size: 13.5px; color: #6e6e73; margin-bottom: 3px;
@@ -634,9 +764,11 @@ watch([workRole, personalPage], loadAll)
 .center { text-align: center; }
 .ring { width: 128px; height: 128px; border-radius: 50%; margin: 14px auto 12px; display: grid; place-items: center; }
 .ring i { width: 98px; height: 98px; border-radius: 50%; background: #fff; display: grid; place-items: center; font-style: normal; font-size: 22px; font-weight: 600; color: #0071e3; }
-.hotline { background: #fff; border-radius: 20px; padding: 16px 20px; display: flex; align-items: center; gap: 9px; box-shadow: 0 2px 14px rgba(0, 0, 0, 0.035); font-size: 11.5px; color: #86868b; }
-.hotline b { color: #0071e3; font-size: 14px; }
-.hotline small { margin-left: auto; font-size: 10px; }
+.service-contacts { overflow-wrap: anywhere; }
+.service-contact-list { list-style: none; padding: 0; margin: 10px 0 0; display: grid; gap: 8px; }
+.service-contact-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 13px; }
+.service-hotline { margin: 10px 0 0; }
+.service-hotline strong { color: var(--brand); }
 
 .tabs, .mobile-menu-button { display: none; }
 .mobile-nav-mask { position:fixed; inset:0; z-index:120; background:rgba(29,29,31,.4); display:flex; }
@@ -667,6 +799,7 @@ watch([workRole, personalPage], loadAll)
   .search { width: 160px; }
   .layout { grid-template-columns: 188px minmax(0, 1fr); gap: 24px; padding: 30px 26px 60px; }
   .rail { grid-column: 2; position: static; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 6px; align-items: start; }
+  .service-contacts { grid-column: 2; }
 }
 @media (max-width: 899px) {
   .shell { min-height:100vh; min-height:100dvh; }
@@ -681,6 +814,8 @@ watch([workRole, personalPage], loadAll)
   .side { display: none; }
   .main { padding: 20px 16px 0; }
   .rail { display: none; }
+  .rail.home-rail { display: block; margin: 12px 16px 0; }
+  .home-rail > :not(.service-contacts) { display: none; }
   .tabs {
     display: flex; position: fixed; left:0; right:0; bottom:0; height:calc(64px + env(safe-area-inset-bottom,0px)); padding-bottom:env(safe-area-inset-bottom,0px); z-index:70;
     background: rgba(255, 255, 255, 0.96); backdrop-filter: blur(18px);

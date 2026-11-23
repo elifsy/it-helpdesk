@@ -6,21 +6,29 @@ import com.tzme.helpdesk.common.PageResult;
 import com.tzme.helpdesk.config.HelpdeskProperties;
 import com.tzme.helpdesk.domain.Asset;
 import com.tzme.helpdesk.domain.AssetHistory;
+import com.tzme.helpdesk.dto.AssetCreateReq;
 import com.tzme.helpdesk.mapper.AssetHistoryMapper;
 import com.tzme.helpdesk.mapper.AssetMapper;
+import com.tzme.helpdesk.mapper.UserMapper;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
 public class AssetService {
 
     private final AssetMapper assetMapper;
+    private final NoGen numbers;
+    private final UserMapper users;
     private final AssetHistoryMapper historyMapper;
     private final HelpdeskProperties props;
     private final RuntimeSettingsService settings;
@@ -28,17 +36,67 @@ public class AssetService {
     private final com.tzme.helpdesk.mapper.ManagementMapper management;
     private final AuditService audit;
     private final com.fasterxml.jackson.databind.ObjectMapper json;
+    private final com.tzme.helpdesk.mapper.AssetRequestMapper requestMapper;
+    private final com.tzme.helpdesk.mapper.PurchaseRequestItemMapper purchaseItemMapper;
 
-    @org.springframework.transaction.annotation.Transactional
-    public Asset create(com.tzme.helpdesk.dto.AssetCreateReq req) {
+    /** 允许的卡片图标 key（与前端 utils/deviceIcons.ts 保持一致） */
+    private static final java.util.Set<String> ICON_KEYS = java.util.Set.of(
+            "laptop", "desktop", "monitor", "projector", "keyboard", "mouse", "headset",
+            "printer", "server", "network", "phone", "tablet", "generic");
+
+    /** 空或 auto = 自动匹配；其它值必须在白名单内 */
+    private String icon(String value) {
+        if (value == null || value.isBlank() || "auto".equalsIgnoreCase(value.trim())) return null;
+        String key = value.trim();
+        if (!ICON_KEYS.contains(key)) throw new BizException("不支持的卡片图标：" + key);
+        return key;
+    }
+
+    @Transactional
+    public Asset create(AssetCreateReq req) {
         com.tzme.helpdesk.security.Permissions.require("asset.create");
         management.lockSetting("management-lock");
+        Asset created = createLocked(req, null);
+        return assetMapper.findByNo(created.getNo());
+    }
+
+    @Transactional
+    public int importBatch(List<AssetWorkbook.AssetRow> rows) {
+        com.tzme.helpdesk.security.Permissions.require("asset.create");
+        management.lockSetting("management-lock");
+        Map<String, Long> names = rows.stream().anyMatch(row -> row.userName() != null)
+                ? users.listActiveNames().stream().collect(Collectors.groupingBy(Function.identity(), Collectors.counting()))
+                : Map.of();
+        for (var row : rows) {
+            String prefix = "第 " + row.number() + " 行：";
+            try {
+                validateImportUser(row, names);
+                createLocked(row.request(), row.userName());
+            } catch (BizException e) {
+                throw new BizException(e.getCode(), prefix + e.getMessage());
+            } catch (DuplicateKeyException e) {
+                throw new BizException(409, prefix + "资产编号或ERP资产编号已存在，请重试");
+            }
+        }
+        return rows.size();
+    }
+
+    private void validateImportUser(AssetWorkbook.AssetRow row, Map<String, Long> names) {
+        if (row.userName() == null) return;
+        if (!"在用".equals(row.request().getStatus())) throw new BizException("填写使用人时，设备状态请留空或填写在用");
+        long matches = names.getOrDefault(row.userName(), 0L);
+        if (matches == 0) throw new BizException("通讯录中找不到在职人员“" + row.userName() + "”，请核对使用人姓名");
+        if (matches > 1) throw new BizException("通讯录中有多名“" + row.userName() + "”，无法确定使用人");
+    }
+
+    private Asset createLocked(AssetCreateReq req, String userName) {
         Asset asset=new Asset();
-        org.springframework.beans.BeanUtils.copyProperties(req,asset);
-        if(asset.getNo()==null || asset.getNo().isBlank() || asset.getNo().length()>32) throw new BizException("请填写不超过32字的资产编号");
+        org.springframework.beans.BeanUtils.copyProperties(req,asset,"no");
         if(asset.getName()==null || asset.getName().isBlank() || asset.getName().length()>128) throw new BizException("请填写有效的资产名称");
-        asset.setNo(asset.getNo().trim()); asset.setName(asset.getName().trim());
-        if(assetMapper.findByNo(asset.getNo())!=null) throw new BizException(409,"资产编号已存在");
+        asset.setName(asset.getName().trim());
+        String erpNo = optional(req.getErpNo() == null ? req.getNo() : req.getErpNo());
+        requireAvailableErpNo(erpNo, null);
+        asset.setErpNo(erpNo);
         asset.setCategory(categories.require(asset.getCategory()).getName());
         if(asset.getStatus()==null) asset.setStatus("待入库");
         validateDates(asset.getBuyDate(),asset.getWarrantyEnd());
@@ -46,10 +104,14 @@ public class AssetService {
         asset.setModel(optional(asset.getModel())); asset.setSn(optional(asset.getSn())); asset.setLocation(optional(asset.getLocation()));
         asset.setWarranty(optional(asset.getWarranty())); asset.setRemark(optional(asset.getRemark()));
         asset.setStatus(statusForLocation(asset.getStatus(),asset.getLocation()));
+        asset.setIcon(icon(req.getIcon()));
+        asset.setUserName(userName);
+        asset.setNo(numbers.nextAsset());
         assetMapper.insert(asset);
-        addHistory(asset.getNo(),"入库","新资产入库（"+asset.getName()+"）；分类="+asset.getCategory(),CurrentUser.name());
-        audit.record("ASSET_CREATE",asset.getNo(),asset.getName()+"；分类="+asset.getCategory());
-        return assetMapper.findByNo(asset.getNo());
+        String details = "分类=" + asset.getCategory() + (userName == null ? "" : "；使用人=" + userName);
+        addHistory(asset.getNo(),"入库","新资产入库（"+asset.getName()+"）；"+details,CurrentUser.name());
+        audit.record("ASSET_CREATE",asset.getNo(),asset.getName()+"；"+details);
+        return asset;
     }
 
     @org.springframework.transaction.annotation.Transactional
@@ -69,7 +131,38 @@ public class AssetService {
     }
 
     public List<Asset> list(String status, String category, String keyword) {
-        return assetMapper.list(status, category, keyword);
+        List<Asset> rows = assetMapper.list(status, category, keyword);
+        markReserved(rows);
+        return rows;
+    }
+
+    /** 给「已批准待交接」的设备打上占用信息：仅待领取（PICKUP）代表设备已经许给别人 */
+    private void markReserved(List<Asset> rows) {
+        if (rows == null || rows.isEmpty()) return;
+        Map<String, String[]> reserved = new java.util.HashMap<>();
+        for (Map<String, Object> m : requestMapper.listReserved()) {
+            if (!"PICKUP".equals(String.valueOf(m.get("handoverStatus")))) continue;
+            reserved.put(String.valueOf(m.get("assetNo")), new String[]{
+                    m.get("applicant") == null ? "" : String.valueOf(m.get("applicant")),
+                    m.get("no") == null ? "" : String.valueOf(m.get("no"))});
+        }
+        // 购入申请已入库待领取的资产同样占用
+        java.util.List<java.util.Map<String, Object>> purchase = purchaseItemMapper.listReserved();
+        if (purchase != null) {
+            for (java.util.Map<String, Object> m : purchase) {
+                reserved.putIfAbsent(String.valueOf(m.get("assetNo")), new String[]{
+                        m.get("applicant") == null ? "" : String.valueOf(m.get("applicant")),
+                        m.get("no") == null ? "" : String.valueOf(m.get("no"))});
+            }
+        }
+        if (reserved.isEmpty()) return;
+        for (Asset a : rows) {
+            String[] hit = reserved.get(a.getNo());
+            if (hit != null) {
+                a.setReservedBy(hit[0]);
+                a.setReservedRequestNo(hit[1]);
+            }
+        }
     }
 
     public PageResult<Asset> page(String status, String category, String keyword, int page, int size) {
@@ -93,17 +186,23 @@ public class AssetService {
         if(!editableStatuses(asset).contains(status))
             throw new BizException(409,"设备已分配或借出，请通过资产申请流程更新使用状态");
         String category=categories.require(req.getCategory()).getName();
+        String icon=icon(req.getIcon());
+        String erpNo = req.isErpNoProvided() ? optional(req.getErpNo()) : asset.getErpNo();
+        requireAvailableErpNo(erpNo, asset.getNo());
         List<String> changes=new ArrayList<>();
         changed(changes,"名称",asset.getName(),name); changed(changes,"分类",asset.getCategory(),category);
+        changed(changes,"ERP资产编号",asset.getErpNo(),erpNo);
         changed(changes,"型号",asset.getModel(),optional(req.getModel()));
         changed(changes,"SN",asset.getSn(),optional(req.getSn())); changed(changes,"位置",asset.getLocation(),location);
         changed(changes,"购置日期",asset.getBuyDate(),req.getBuyDate()); changed(changes,"维保方式",asset.getWarranty(),optional(req.getWarranty()));
         changed(changes,"维保到期",asset.getWarrantyEnd(),req.getWarrantyEnd()); changed(changes,"状态",asset.getStatus(),status);
         changed(changes,"备注",asset.getRemark(),optional(req.getRemark()));
+        changed(changes,"图标",asset.getIcon(),icon);
         if(!changes.isEmpty()) {
+            asset.setErpNo(erpNo);
             asset.setName(name); asset.setModel(optional(req.getModel())); asset.setCategory(category); asset.setSn(optional(req.getSn())); asset.setLocation(location);
             asset.setBuyDate(req.getBuyDate()); asset.setWarranty(optional(req.getWarranty())); asset.setWarrantyEnd(req.getWarrantyEnd());
-            asset.setStatus(status); asset.setRemark(optional(req.getRemark()));
+            asset.setStatus(status); asset.setRemark(optional(req.getRemark())); asset.setIcon(icon);
             assetMapper.updateDetails(asset);
             addHistory(no,"编辑设备","更新设备资料："+String.join("、",changes.stream().map(item -> item.substring(0,item.indexOf('：'))).toList()),CurrentUser.name());
             audit.record("ASSET_UPDATE",no,String.join("；",changes));
@@ -112,6 +211,11 @@ public class AssetService {
     }
 
     private String optional(String value) { return value==null || value.isBlank() ? null : value.trim(); }
+    private void requireAvailableErpNo(String erpNo, String currentNo) {
+        if (erpNo == null) return;
+        String existingNo = assetMapper.findNoByErpNo(erpNo);
+        if (existingNo != null && !existingNo.equals(currentNo)) throw new BizException(409, "ERP资产编号已存在");
+    }
     private String statusForLocation(String status,String location) {
         return "待入库".equals(status) && location!=null && !location.isBlank() ? "闲置" : status;
     }
@@ -128,7 +232,7 @@ public class AssetService {
     }
     private String editToken(Asset asset) {
         try {
-            byte[] value=json.writeValueAsBytes(java.util.Arrays.asList(asset.getNo(),asset.getName(),asset.getModel(),asset.getCategory(),asset.getSn(),
+            byte[] value=json.writeValueAsBytes(java.util.Arrays.asList(asset.getNo(),asset.getErpNo(),asset.getName(),asset.getModel(),asset.getCategory(),asset.getSn(),
                     asset.getUserName(),asset.getLocation(),asset.getBuyDate(),asset.getWarranty(),asset.getWarrantyEnd(),asset.getStatus(),
                     asset.getBorrower(),asset.getBorrowDue(),asset.getRemark(),asset.getUpdatedAt()));
             return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(value));

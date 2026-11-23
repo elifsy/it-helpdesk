@@ -12,7 +12,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.client.RestClientException;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -24,6 +27,36 @@ import java.util.Map;
 @Slf4j
 @Service
 public class DingTalkService {
+    public record LeavePeriod(String userId, Instant start, Instant end) { }
+
+    public List<LeavePeriod> leavePeriods(List<String> userIds, Instant start, Instant end) {
+        if (userIds.isEmpty()) return List.of();
+        String url = props.getDingtalk().getLeaveStatusUrl() + "?access_token=" + accessToken();
+        int size = 20;
+        List<LeavePeriod> periods = new ArrayList<>();
+        for (int offset = 0; ; offset += size) {
+            var body = post(url, Map.of("userid_list", String.join(",", userIds), "start_time", start.toEpochMilli(),
+                    "end_time", end.toEpochMilli(), "offset", offset, "size", size));
+            if (body == null || num(body.get("errcode")) != 0 || Boolean.FALSE.equals(body.get("success"))
+                    || !(body.get("result") instanceof Map<?, ?> result)
+                    || !(result.get("has_more") instanceof Boolean more)) {
+                if (body != null) log.warn("DingTalk leave status lookup unsuccessful, code {}", num(body.get("errcode")));
+                throw new BizException(502, "钉钉请假状态暂不可用");
+            }
+            Object entries = result.get("leave_status");
+            if (entries == null && !more) return periods;
+            if (!(entries instanceof List<?> rows) || (rows.isEmpty() && more))
+                throw new BizException(502, "钉钉请假状态响应不完整");
+            for (Object row : rows) {
+                if (!(row instanceof Map<?, ?> entry) || !(entry.get("userid") instanceof String userId))
+                    throw new BizException(502, "钉钉请假状态响应不完整");
+                long from = num(entry.get("start_time")), to = num(entry.get("end_time"));
+                if (from <= 0 || to <= from) throw new BizException(502, "钉钉请假时间无效");
+                if (userIds.contains(userId)) periods.add(new LeavePeriod(userId, Instant.ofEpochMilli(from), Instant.ofEpochMilli(to)));
+            }
+            if (!more) return periods;
+        }
+    }
 
     public record UserProfile(String userId, String name, String employeeNo, List<Long> departmentIds) { }
 
@@ -162,26 +195,35 @@ public class DingTalkService {
                 + "），请管理员根据此错误码检查钉钉接口配置后重试";
     }
 
-    /** 工作通知（action_card），失败只记日志，不影响主流程 */
-    public void sendWorkNotify(String dingUserId, String title, String content, String url) {
-        if (!enabled() || dingUserId == null || dingUserId.isBlank()) {
+    public String workAppLink(String target) {
+        var app = props.getDingtalk();
+        if (app.getCorpId().isBlank() || app.getAgentId().isBlank()) return null;
+        return "dingtalk://dingtalkclient/action/openapp?corpid=" + encode(app.getCorpId())
+                + "&container_type=work_platform&app_id=" + encode("0_" + app.getAgentId())
+                + "&redirect_type=jump&redirect_url=" + encode(target);
+    }
+
+    private static String encode(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    /** 工单通知使用可跳转的 OA 卡片。其他无链接通知继续使用 Markdown。 */
+    public void sendWorkNotify(String dingUserIds, String title, String content, String url) {
+        if (!enabled() || dingUserIds == null || dingUserIds.isBlank()) {
             return;
         }
         try {
-            Map<String, Object> card = new HashMap<>();
-            card.put("title", title);
-            card.put("markdown", "### " + title + "\n\n" + content);
-            if (url != null && !url.isBlank()) {
-                card.put("single_title", "查看详情");
-                card.put("single_url", url);
-            }
-            Map<String, Object> msg = new HashMap<>();
-            msg.put("msgtype", "action_card");
-            msg.put("action_card", card);
+            String markdown = "### " + title + "\n\n" + content;
+            Map<String, Object> msg = url == null || url.isBlank()
+                    ? Map.of("msgtype", "markdown", "markdown", Map.of("title", title, "text", markdown))
+                    : Map.of("msgtype", "oa", "oa", Map.of(
+                            "message_url", url, "pc_message_url", url,
+                            "head", Map.of("bgcolor", "FF0071E3", "text", "IT 服务台"),
+                            "body", Map.of("title", title, "content", "点击查看工单\n" + content)));
 
             Map<String, Object> body = new HashMap<>();
             body.put("agent_id", props.getDingtalk().getAgentId());
-            body.put("userid_list", dingUserId);
+            body.put("userid_list", dingUserIds);
             body.put("msg", msg);
 
             @SuppressWarnings("unchecked")
@@ -240,6 +282,84 @@ public class DingTalkService {
             cursor = next instanceof Number n ? n.longValue() : 0;
         }
         return all;
+    }
+
+    /** 发起钉钉审批实例（新版 API），返回 instanceId */
+    @SuppressWarnings("unchecked")
+    public String createApprovalInstance(String processCode, String originatorUserId, Long deptId,
+                                         java.util.List<Map<String, Object>> formValues) {
+        if (!enabled()) throw new com.tzme.helpdesk.common.BizException(503, "钉钉未启用，无法发起钉钉审批");
+        if (processCode == null || processCode.isBlank())
+            throw new com.tzme.helpdesk.common.BizException("未配置该业务的钉钉审批模板");
+        Map<String, Object> body = new HashMap<>();
+        body.put("processCode", processCode);
+        body.put("originatorUserId", originatorUserId);
+        if (deptId != null && deptId > 0) body.put("deptId", deptId);
+        String agent = props.getDingtalk().getAgentId();
+        if (agent != null && !agent.isBlank()) {
+            try { body.put("microappAgentId", Long.parseLong(agent.trim())); } catch (NumberFormatException ignore) { }
+        }
+        body.put("formComponentValues", formValues);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("x-acs-dingtalk-access-token", accessToken());
+        Map<String, Object> resp;
+        try {
+            resp = rest.postForObject(props.getDingtalk().getApprovalUrl(), new HttpEntity<>(body, headers), Map.class);
+        } catch (Exception e) {
+            throw new com.tzme.helpdesk.common.BizException(502, "发起钉钉审批失败：" + e.getMessage());
+        }
+        Object instanceId = resp == null ? null : resp.get("instanceId");
+        if (instanceId == null || String.valueOf(instanceId).isBlank()) {
+            throw new com.tzme.helpdesk.common.BizException(502, "发起钉钉审批失败："
+                    + (resp == null ? "空响应" : String.valueOf(resp.get("message"))));
+        }
+        return String.valueOf(instanceId);
+    }
+
+    /** 查询钉钉审批实例：返回 result 节点（含 status/result），失败返回 null */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> getApprovalInstance(String instanceId) {
+        if (!enabled()) throw new com.tzme.helpdesk.common.BizException(503, "钉钉未启用");
+        String url = props.getDingtalk().getApprovalUrl()
+                + "?processInstanceId=" + java.net.URLEncoder.encode(instanceId, java.nio.charset.StandardCharsets.UTF_8);
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("x-acs-dingtalk-access-token", accessToken());
+        try {
+            Map<String, Object> resp = rest.exchange(url, org.springframework.http.HttpMethod.GET,
+                    new HttpEntity<>(headers), Map.class).getBody();
+            if (resp == null) return null;
+            Object result = resp.get("result");
+            return result instanceof Map ? (Map<String, Object>) result : resp;
+        } catch (Exception e) {
+            log.warn("get dingtalk approval instance failed: {} - {}", instanceId, e.getMessage());
+            return null;
+        }
+    }
+
+    /** 按审批模板名称查 processCode；查不到抛业务异常并带上钉钉原因 */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> findProcessByName(String name) {
+        if (!enabled()) throw new com.tzme.helpdesk.common.BizException(503, "钉钉未启用，无法查询审批模板");
+        if (name == null || name.isBlank()) throw new com.tzme.helpdesk.common.BizException("请填写钉钉审批模板名称");
+        Map<String, Object> body = new HashMap<>();
+        body.put("name", name.trim());
+        Map<String, Object> resp;
+        try {
+            resp = post(props.getDingtalk().getProcessByNameUrl() + "?access_token=" + accessToken(), body);
+        } catch (Exception e) {
+            throw new com.tzme.helpdesk.common.BizException(502, "调用钉钉接口失败：" + e.getMessage());
+        }
+        if (resp == null) throw new com.tzme.helpdesk.common.BizException(502, "钉钉返回空响应");
+        long code = num(resp.get("errcode"));
+        if (code != 0) {
+            String msg = String.valueOf(resp.get("errmsg"));
+            throw new com.tzme.helpdesk.common.BizException(502, "钉钉未找到该模板：" + msg + "（请核对模板名称，并确认应用已开通审批权限）");
+        }
+        Object result = resp.get("result");
+        if (!(result instanceof Map)) throw new com.tzme.helpdesk.common.BizException(502, "钉钉未返回模板信息");
+        return (Map<String, Object>) result;
     }
 
     private Map<String, Object> post(String url, Map<String, Object> body) {

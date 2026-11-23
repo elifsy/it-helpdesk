@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
-import { assetRequestApi, statsApi, ticketApi } from '../../api'
+import { assetRequestApi, serviceContactApi, statsApi, ticketApi, type ServiceContactRoster } from '../../api'
+import ContactLeaveStatus from '../../components/ContactLeaveStatus.vue'
 import { useAuthStore } from '../../stores/auth'
 import { REQ_STATUS_CLASS, REQ_STATUS_NAME, REQ_TYPE, remainText, statusName } from '../../utils/dict'
 import { toast } from '../../utils/toast'
@@ -12,6 +13,8 @@ const kpi = ref({ pending: 0, processing: 0, overdue: 0, rating: 0, rated: 0 })
 const newTickets = ref<any[]>([])
 const approvals = ref<any[]>([])
 const loading = ref(true)
+const duty = ref<ServiceContactRoster>()
+let contactTimer: ReturnType<typeof setInterval> | undefined
 const cards = computed(() => [
   { key: 'pending', label: '待受理', value: kpi.value.pending, color: 'var(--red)', to: '/admin/tickets?status=NEW', allowed: auth.can('ticket.view.all') },
   { key: 'processing', label: '处理中', value: kpi.value.processing, color: 'var(--brand)', to: '/admin/tickets?status=PROCESSING', allowed: auth.can('ticket.view.all') },
@@ -19,7 +22,13 @@ const cards = computed(() => [
   { key: 'rating', label: `满意度（${kpi.value.rated} 条评价）`, value: kpi.value.rating || '—', color: 'var(--green)', to: '/admin/stats', allowed: auth.can('stats.view') }
 ])
 
+async function loadContacts() {
+  try { duty.value = await serviceContactApi.roster() } catch { /* 工作台其他功能仍可用 */ }
+}
+
 onMounted(async () => {
+  void loadContacts()
+  contactTimer = setInterval(() => { if (!document.hidden) void loadContacts() }, 300000)
   try {
     const [pend, appr, overview] = await Promise.all([
       auth.can('ticket.view.all') ? ticketApi.list({ status: 'NEW', page: 1, size: 10 }) : Promise.resolve({ list: [], total: 0 }),
@@ -35,6 +44,7 @@ onMounted(async () => {
     loading.value = false
   }
 })
+onUnmounted(() => clearInterval(contactTimer))
 </script>
 
 <template>
@@ -75,6 +85,7 @@ onMounted(async () => {
             <span class="small muted">{{ remainText(t.remainMinutes) || statusName(t.status) }}</span>
           </div>
           <div class="mm">{{ t.no }} · {{ t.creatorName }} · {{ t.cat1 }}</div>
+          <span v-if="t.pendingReportCount" class="pill b-orange">{{ t.pendingReportCount }} 条待补报</span>
         </div>
       </div>
 
@@ -91,12 +102,25 @@ onMounted(async () => {
             <span class="pill" :class="REQ_STATUS_CLASS[r.status]">{{ REQ_STATUS_NAME[r.status] }}</span>
           </div>
           <div class="mm">{{ r.no }} · {{ r.applicant }} · {{ r.assetName || r.assetNo }}</div>
+          <span v-if="r.pendingReportCount" class="pill b-orange">{{ r.pendingReportCount }} 条待补报</span>
         </div>
 
-        <div class="duty">
-          <div class="small muted">今日值班</div>
-          <div style="margin-top: 6px">服务台 王敏 · 终端 李强 · 系统 孙鹏</div>
-          <div class="small muted" style="margin-top: 4px">热线 8300（系统故障兜底）</div>
+        <div v-if="duty || auth.can('settings.manage')" class="duty">
+          <div class="row">
+            <span class="small muted">IT 服务联系人</span>
+            <span class="sp" />
+            <RouterLink v-if="auth.can('settings.manage')" to="/admin/config?tab=duty" class="small">编辑联系人</RouterLink>
+          </div>
+          <div v-if="duty?.contacts.length" class="duty-members">
+            <div v-for="(contact, index) in duty.contacts" :key="index" class="contact-line">
+              <span>{{ contact.member.position }} {{ contact.member.name }}</span>
+              <ContactLeaveStatus :contact="contact" />
+            </div>
+          </div>
+          <div v-if="duty?.hotline" class="small muted duty-hotline">
+            热线 {{ duty.hotline }}{{ duty.hotlineNote ? '（' + duty.hotlineNote + '）' : '' }}
+          </div>
+          <div v-if="duty && !duty.contacts.length && !duty.hotline" class="small muted duty-members">暂无联系人</div>
         </div>
       </div>
     </div>
@@ -168,7 +192,11 @@ onMounted(async () => {
   border-radius: 8px;
   padding: 11px 12px;
   font-size: 12.5px;
+  overflow-wrap: anywhere;
 }
+.duty-members { margin-top:6px; }
+.contact-line { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:3px 0; }
+.duty-hotline { margin-top:4px; }
 @media (max-width: 1000px) {
   .grid2 {
     grid-template-columns: 1fr;

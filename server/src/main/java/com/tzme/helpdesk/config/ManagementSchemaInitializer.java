@@ -15,12 +15,16 @@ public class ManagementSchemaInitializer implements InitializingBean {
     private final DataSource dataSource;
     @Override public void afterPropertiesSet() {
         ResourceDatabasePopulator populator = new ResourceDatabasePopulator(
-                new ClassPathResource("db/management.sql"), new ClassPathResource("db/attachments.sql"));
+                new ClassPathResource("db/management.sql"), new ClassPathResource("db/attachments.sql"),
+                new ClassPathResource("db/purchase.sql"), new ClassPathResource("db/missing-reports.sql"));
         populator.setSqlScriptEncoding("UTF-8");
         populator.execute(dataSource);
         DingTalkSchemaMigration.upgrade(dataSource);
         KnowledgeSchemaMigration.upgrade(dataSource);
         AssetSchemaMigration.upgrade(dataSource);
+        DingApprovalSchemaMigration.upgrade(dataSource);
+        NotificationSchemaMigration.upgrade(dataSource);
+        ApplicantIdentityMigration.upgrade(dataSource);
         JdbcTemplate jdbc = new JdbcTemplate(dataSource);
         Boolean hasCategoryNote = jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<Boolean>) connection -> {
             try (var columns = connection.getMetaData().getColumns(connection.getCatalog(), null, "it_ticket", "category_note")) {

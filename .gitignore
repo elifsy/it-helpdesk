@@ -8,6 +8,8 @@ target/
 node_modules/
 dist/
 dist-staging/
+dist-server-sync*/
+dist-check*/
 dist-ssr/
 *.local
 *.tsbuildinfo

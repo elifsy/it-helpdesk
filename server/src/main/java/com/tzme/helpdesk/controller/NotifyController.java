@@ -19,23 +19,23 @@ public class NotifyController {
 
     @GetMapping
     public ApiResponse<List<Notify>> list() {
-        return ApiResponse.ok(notifyService.list(CurrentUser.name()));
+        return ApiResponse.ok(notifyService.list(CurrentUser.require()));
     }
 
     @GetMapping("/unread-count")
     public ApiResponse<Map<String, Long>> unread() {
-        return ApiResponse.ok(Map.of("count", notifyService.unread(CurrentUser.name())));
+        return ApiResponse.ok(Map.of("count", notifyService.unread(CurrentUser.require())));
     }
 
     @PostMapping("/{id}/read")
     public ApiResponse<Void> read(@PathVariable Long id) {
-        notifyService.markRead(id, CurrentUser.name());
+        notifyService.markRead(id, CurrentUser.require());
         return ApiResponse.ok();
     }
 
     @PostMapping("/read-all")
     public ApiResponse<Void> readAll() {
-        notifyService.markAllRead(CurrentUser.name());
+        notifyService.markAllRead(CurrentUser.require());
         return ApiResponse.ok();
     }
 }

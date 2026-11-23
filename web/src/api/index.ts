@@ -1,5 +1,39 @@
 import http from './http'
 import { assetQrContent } from '../utils/asset-links'
+import type { TicketCategoriesByType } from '../config/ticket-types'
+
+export interface TicketNotificationRule {
+  type: string
+  cat1: string
+  cat2: string | null
+  recipientIds: number[]
+}
+
+export interface IncomingNotificationRules {
+  revision: number
+  ticketRules: TicketNotificationRule[]
+  assetRecipients: Record<string, number[]>
+}
+
+export interface NotificationRecipient {
+  id: number
+  name: string
+  department: string | null
+  employeeNo: string | null
+  role: 'IT' | 'ADMIN'
+}
+
+export interface IncomingNotificationConfig {
+  rules: IncomingNotificationRules
+  categories: TicketCategoriesByType
+  recipients: NotificationRecipient[]
+}
+
+export const incomingNotificationApi = {
+  config: () => http.get<any, IncomingNotificationConfig>('/admin/manage/incoming-notifications'),
+  save: (rules: IncomingNotificationRules) =>
+    http.put<any, IncomingNotificationRules>('/admin/manage/incoming-notifications', rules)
+}
 
 export interface LoginResult {
   token: string
@@ -10,6 +44,39 @@ export interface LoginResult {
   roles: string[]
   permissions: string[]
   dingUserId?: string
+}
+
+export interface MissingReportSummary { pending: number; limit: number; blocked: boolean }
+export interface MissingReport {
+  no: string
+  requesterId: number
+  requesterName: string
+  recordedBy: string
+  title: string
+  description: string
+  channel: 'CHAT' | 'PHONE'
+  completedAt: string
+  status: 'PENDING' | 'SUBMITTED' | 'CANCELLED'
+  ticketNo?: string
+  cancelReason?: string
+}
+export interface MissingReportRequester { id: number; name: string; department?: string; employeeNo?: string }
+
+export const missingReportApi = {
+  summary: () => http.get<any, MissingReportSummary>('/missing-reports/summary'),
+  mine: () => http.get<any, MissingReport[]>('/missing-reports/mine'),
+  list: (page: number) => http.get<any, { list: MissingReport[]; total: number; size: number }>('/missing-reports', { params: { page } }),
+  search: (keyword: string) => http.get<any, MissingReportRequester[]>('/missing-reports/requesters', { params: { keyword } }),
+  detail: (no: string) => http.get<any, { report: MissingReport; evidence: { id: number; storedName: string; fileName: string; contentType: string }[] }>(`/missing-reports/${encodeURIComponent(no)}`),
+  register: (report: { requesterId: number; title: string; description: string; channel: string; completedAt: string }, evidence: File) => {
+    const form = new FormData()
+    form.append('report', new Blob([JSON.stringify(report)], { type: 'application/json' }), 'report.json')
+    form.append('evidence', evidence)
+    return http.post<any, MissingReport>('/missing-reports', form)
+  },
+  submit: (no: string, form: { title: string; description: string; location: string; type: string; cat1: string; cat2: string }) =>
+    http.post<any, { no: string }>(`/missing-reports/${encodeURIComponent(no)}/submit`, form),
+  cancel: (no: string, reason: string) => http.post(`/missing-reports/${encodeURIComponent(no)}/cancel`, { reason })
 }
 
 export const authApi = {
@@ -44,7 +111,13 @@ export const assetApi = {
     const result = await http.get<any, any>(`/assets/${encodeURIComponent(no)}/qrcode`)
     return { ...result, content: assetQrContent(no, result.content, window.location.href) }
   },
-  create: (data: any) => http.post<any, any>('/assets', data)
+  create: (data: any) => http.post<any, any>('/assets', data),
+  importTemplate: () => http.get<any, Blob>('/assets/import/template', { responseType: 'blob' }),
+  importFile: (file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return http.post<any, { imported: number }>('/assets/import', form, { timeout: 60000 })
+  }
 }
 
 export interface AssetCategory { id: number; name: string; sort: number; assetCount: number }
@@ -55,12 +128,43 @@ export const assetCategoryApi = {
   remove: (id: number) => http.delete<any, any>(`/asset-categories/${id}`)
 }
 
+export const purchaseApi = {
+  catalog: (all = false) => http.get<any, any>('/purchase-catalog', { params: { all } }),
+  saveCatalog: (data: any) => http.post<any, any>('/purchase-catalog', data),
+  deleteCatalog: (id: number) => http.delete<any, any>(`/purchase-catalog/${id}`),
+  list: (params: Record<string, any> = {}) => http.get<any, any>('/purchase-requests', { params }),
+  detail: (id: number) => http.get<any, any>(`/purchase-requests/${id}`),
+  /** 购物车：items = 目录项 + 台数 */
+  create: (data: { items: { catalogId: number; qty: number }[]; reason: string }) =>
+    http.post<any, any>('/purchase-requests', data),
+  approve: (id: number, remark = '') => http.post<any, any>(`/purchase-requests/${id}/approve`, { remark }),
+  reject: (id: number, remark = '') => http.post<any, any>(`/purchase-requests/${id}/reject`, { remark }),
+  /** 明细级：库存配发 / 转采购 / 确认交付 */
+  assignItem: (id: number, itemId: number, assetNo: string) =>
+    http.post<any, any>(`/purchase-requests/${id}/items/${itemId}/assign`, { assetNo }),
+  orderItem: (id: number, itemId: number, erpNo: string) =>
+    http.post<any, any>(`/purchase-requests/${id}/items/${itemId}/order`, { erpNo }),
+  deliverItem: (id: number, itemId: number) =>
+    http.post<any, any>(`/purchase-requests/${id}/items/${itemId}/deliver`),
+  cancel: (id: number) => http.post<any, any>(`/purchase-requests/${id}/cancel`)
+}
+
+export const dingApprovalApi = {
+  status: () => http.get<any, any>('/admin/ding-approval/status'),
+  fields: (type?: string) => http.get<any, any>('/admin/ding-approval/fields', { params: { type } }),
+  lookup: (name: string) => http.get<any, any>('/admin/ding-approval/lookup', { params: { name } }),
+  sync: () => http.post<any, any>('/admin/ding-approval/sync'),
+  mock: (no: string, status = 'COMPLETED') =>
+    http.post<any, any>(`/admin/ding-approval/mock/${encodeURIComponent(no)}?status=${encodeURIComponent(status)}`)
+}
+
 export const assetRequestApi = {
   list: (params: Record<string, any> = {}) => http.get<any, any>('/asset-requests', { params }),
   create: (data: any) => http.post<any, any>('/asset-requests', data),
   approve: (id: number, data: any = {}) => http.post<any, any>(`/asset-requests/${id}/approve`, data),
   reject: (id: number, reason: string) => http.post<any, any>(`/asset-requests/${id}/reject`, { reason }),
-  cancel: (id: number) => http.post<any, any>(`/asset-requests/${id}/cancel`)
+  cancel: (id: number) => http.post<any, any>(`/asset-requests/${id}/cancel`),
+  handover: (id: number) => http.post<any, any>(`/asset-requests/${id}/handover`)
 }
 
 export const kbApi = {
@@ -91,8 +195,29 @@ export const notifyApi = {
   readAll: () => http.post<any, any>('/notifies/read-all')
 }
 
+export interface ServiceContactMember { position: string; name: string; userId?: number | null }
+export interface ServiceContact {
+  member: ServiceContactMember
+  status: 'ON_LEAVE' | 'TODAY' | 'NONE' | 'UNKNOWN' | 'UNLINKED'
+  leaveStart?: string
+  leaveEnd?: string
+}
+export interface ServiceContactPerson { id: number; name: string; department?: string; employeeNo?: string }
+export interface ServiceContactRoster { contacts: ServiceContact[]; hotline: string; hotlineNote: string }
+export interface DutySettings {
+  members: ServiceContactMember[]
+  hotline: string
+  hotlineNote: string
+}
+
+export const serviceContactApi = {
+  roster: () => http.get<any, ServiceContactRoster>('/meta/service-contacts'),
+  display: () => http.get<any, ServiceContactRoster>('/meta/service-contacts/display'),
+  people: (keyword: string) => http.get<any, ServiceContactPerson[]>('/meta/service-contacts/people', { params: { keyword } })
+}
+
 export const metaApi = {
-  runtime: () => http.get<any, { maxAttachments: number; maxUploadMb: number; kbRecommendEnabled: boolean; requireSolutionCode: boolean }>('/meta/runtime'),
+  runtime: () => http.get<any, { maxAttachments: number; maxUploadMb: number; kbRecommendEnabled: boolean; requireSolutionCode: boolean; duty?: DutySettings }>('/meta/runtime'),
   categories: () => http.get<any, any>('/meta/categories'),
   categoriesByType: () => http.get<any, import('../config/ticket-types').TicketCategoriesByType>('/meta/categories-by-type'),
   solutionCodes: () => http.get<any, any>('/meta/solution-codes'),

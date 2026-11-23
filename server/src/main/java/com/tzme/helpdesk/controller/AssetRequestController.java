@@ -46,6 +46,13 @@ public class AssetRequestController {
         return ApiResponse.ok(service.reject(id, req.getReason()));
     }
 
+    /** 线下交接确认：待领取 → 交付设备；待归还 → 收回设备（更换会先收回旧机再转待领取） */
+    @PostMapping("/{id}/handover")
+    @com.tzme.helpdesk.security.RequiresPermission({"request.approve"})
+    public ApiResponse<AssetRequest> handover(@PathVariable Long id) {
+        return ApiResponse.ok(service.confirmHandover(id));
+    }
+
     @PostMapping("/{id}/cancel")
     @com.tzme.helpdesk.security.RequiresPermission({"request.create"})
     public ApiResponse<AssetRequest> cancel(@PathVariable Long id) {
