@@ -7,6 +7,8 @@ import java.util.*;
 public interface ManagementMapper {
     @Select("select setting_value from sys_setting where setting_key=#{key}")
     String setting(@Param("key") String key);
+    @Select("select setting_key from sys_setting where setting_key like concat(#{prefix}, '%')")
+    List<String> settingKeysWithPrefix(@Param("prefix") String prefix);
     @Insert("insert ignore into sys_setting(setting_key,setting_value) values(#{key},#{value})")
     int createSetting(@Param("key") String key, @Param("value") String value);
     @Select("select setting_value from sys_setting where setting_key=#{key} for update")

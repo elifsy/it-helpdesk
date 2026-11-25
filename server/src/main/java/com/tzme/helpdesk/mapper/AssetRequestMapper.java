@@ -25,7 +25,9 @@ public interface AssetRequestMapper {
 
     List<AssetRequest> list(@Param("status") String status,
                             @Param("applicant") String applicant,
-                            @Param("type") String type);
+                            @Param("applicantId") Long applicantId,
+                            @Param("type") String type,
+                            @Param("no") String no);
 
     /** 同一人对同一设备待审批的申请：用于阻止重复提交 */
     @org.apache.ibatis.annotations.Select("select * from it_asset_request where applicant=#{applicant} and asset_no=#{assetNo} " +

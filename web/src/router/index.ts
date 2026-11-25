@@ -4,10 +4,11 @@ import { homeForRoles, routeAllowed } from '../config/menus'
 import { assetOperationPath, legacyAssetEntry, parseAssetNo } from '../utils/asset-links'
 import { navigationFailure, reloadRoute } from '../utils/navigation'
 import { ticketNotificationEntry } from '../utils/ticket-links'
+import { notificationEntry } from '../utils/notification-links'
 
-const notificationEntry = ticketNotificationEntry(window.location.href)
-if (notificationEntry) {
-  window.history.replaceState(window.history.state, '', notificationEntry)
+const entry = notificationEntry(window.location.href) ?? ticketNotificationEntry(window.location.href)
+if (entry) {
+  window.history.replaceState(window.history.state, '', entry)
 } else {
   const legacyAsset = legacyAssetEntry(window.location.href)
   if (legacyAsset) window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search + '#' + legacyAsset)

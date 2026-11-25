@@ -1,36 +1,38 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { adminApi, assetCategoryApi, authApi, metaApi, serviceContactApi, type ServiceContactMember, type ServiceContactPerson, type ServiceContactRoster } from '../../api'
+import { adminApi, assetCategoryApi, authApi, metaApi, serviceContactApi, type JobSettings, type JobStatus, type ServiceContactMember, type ServiceContactPerson, type ServiceContactRoster } from '../../api'
 import ContactLeaveStatus from '../../components/ContactLeaveStatus.vue'
+import BadgeTitleSetting from '../../components/BadgeTitleSetting.vue'
+import PersonPicker from '../../components/PersonPicker.vue'
+import type { PersonOption } from '../../utils/people-search'
 import { useAuthStore } from '../../stores/auth'
 import { toast } from '../../utils/toast'
 import RolePermissions from './RolePermissions.vue'
-import { ROLE_NAMES, CONFIG_PERMISSIONS } from '../../config/menus'
+import { ROLE_NAMES, routeAllowed } from '../../config/menus'
 import { TICKET_TYPES, type TicketCategoriesByType } from '../../config/ticket-types'
 
 const route = useRoute()
 const auth = useAuthStore()
 const tab = computed(() => String(route.query.tab || ''))
-const canViewSection = computed(() => (CONFIG_PERMISSIONS[tab.value] || []).some(auth.can))
+const canViewSection = computed(() => routeAllowed(auth.roles, route.fullPath, auth.permissions))
 const roleNames = ROLE_NAMES
+const isSuperAdmin = computed(() => auth.roles.includes('SUPER_ADMIN'))
+const roleOptions = computed(() => Object.entries(roleNames).filter(([role]) => isSuperAdmin.value || role !== 'SUPER_ADMIN'))
 const settings = ref<any>(null)
 const contactRoster = ref<ServiceContactRoster>()
 const contactError = ref('')
 const contactLoading = ref(false)
 let contactLoadVersion = 0
-const binding = ref<number>()
-const contactKeyword = ref('')
-const contactPeople = ref<ServiceContactPerson[]>([])
-const searchedContacts = ref(false)
-const searchingContacts = ref(false)
-let bindingVersion = 0
 const categoryRows = ref<Record<string, { name: string; children: string }[]>>({})
 const categoryType = ref('INCIDENT')
+const selectedHoliday = ref('')
+const weekLabels = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
 const currentCategoryRows = computed(() => categoryRows.value[categoryType.value] || [])
 const baseline = ref('')
 const snapshot = () => JSON.stringify({ settings: settings.value, categories: categoryRows.value })
-const dirty = computed(() => !!settings.value && snapshot() !== baseline.value)
+const settingsDirty = computed(() => !!settings.value && snapshot() !== baseline.value)
+const dirty = computed(() => tab.value === 'jobs' ? jobDirty.value : settingsDirty.value)
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
@@ -40,7 +42,7 @@ const userPage = ref(1)
 const keyword = ref('')
 const status = ref('')
 const departments = ref<any[]>([])
-const engineers = ref<any[]>([])
+const engineers = ref<PersonOption[]>([])
 const codes = ref<any[]>([])
 const permissions = ref<any>({ roles: [], capabilities: [] })
 const auditRows = ref<any[]>([])
@@ -48,11 +50,27 @@ const auditTotal = ref(0)
 const auditPage = ref(1)
 const auditKeyword = ref('')
 const storage = ref<any>({})
-const jobs = ref<any>({ runs: [] })
+const jobs = ref<JobStatus>()
+const jobDraft = ref<JobSettings>()
+const jobDirty = computed(() => !!jobDraft.value && JSON.stringify(jobDraft.value) !== JSON.stringify(jobs.value?.settings))
+const jobRows = [
+  { key: 'sla', label: '超时工单扫描', enabled: 'slaScanEnabled', cron: 'slaCron', nextRun: 'slaNextRun' },
+  { key: 'contacts', label: '通讯录同步', enabled: 'contactSyncEnabled', cron: 'contactCron', nextRun: 'contactNextRun' }
+] as const
+const scanIntervals = [1, 5, 10, 15, 20, 30, 60].map(minutes => ({
+  label: minutes === 60 ? '每小时整点' : '每 ' + minutes + ' 分钟',
+  cron: minutes === 60 ? '0 0 * * * ?' : '0 */' + minutes + ' * * * ?'
+}))
+const scanInterval = computed(() => scanIntervals.find(item => item.cron === jobDraft.value?.slaCron)?.cron ?? '')
+const contactTime = computed(() => {
+  const match = /^0 (\d{1,2}) (\d{1,2}) \* \* [*?]$/.exec(jobDraft.value?.contactCron || '')
+  return match ? [match[2], match[1]].map(part => part.padStart(2, '0')).join(':') : ''
+})
 const syncing = ref('')
 const syncResult = ref<any>(null)
 const dialog = ref<'' | 'user' | 'dept' | 'code'>('')
 const edit = reactive<any>({})
+const handoverEngineers = computed(() => engineers.value.filter(engineer => engineer.id !== edit.id))
 let loadVersion = 0
 
 const handoverCats = ref<{ id: number; name: string }[]>([])
@@ -78,10 +96,18 @@ function toggleHandover(type: string, name: string) {
 function applySettings(value: any) {
   if (value && !value.approvalProcessCodes) value.approvalProcessCodes = { RECEIVE: '', BORROW: '', REPLACE: '', RETURN: '' }
   if (value && !value.handoverCategories) value.handoverCategories = { RECEIVE: [], BORROW: [], REPLACE: [], RETURN: [] }
+  if (value && !value.slaCalendar) value.slaCalendar = { weekdays: [1,2,3,4,5,6], start: '08:00', end: '17:00', holidays: [], pauseForInfo: true, responseHours: [1,2,4,8] }
   settings.value = value
   categoryRows.value = Object.fromEntries(TICKET_TYPES.map(type => [type.v,
     Object.entries(value.categoriesByType?.[type.v] || {}).map(([name, children]) => ({ name, children: (children as string[]).join('，') }))]))
   baseline.value = snapshot()
+}
+
+function addHoliday() {
+  const date = selectedHoliday.value
+  const holidays = settings.value.slaCalendar.holidays as string[]
+  if (date && !holidays.includes(date)) settings.value.slaCalendar.holidays = [...holidays, date].sort()
+  selectedHoliday.value = ''
 }
 
 async function refreshContacts() {
@@ -103,42 +129,15 @@ function contactStatus(member: ServiceContactMember) {
     && (contact.member.userId ?? null) === (member.userId ?? null))
 }
 
-function closeBinding() {
-  bindingVersion++
-  binding.value = undefined
-  searchingContacts.value = false
-  searchedContacts.value = false
-  contactPeople.value = []
-}
-
-function openBinding(index: number) {
-  closeBinding()
-  binding.value = index
-  contactKeyword.value = settings.value.duty.members[index].name
-  if (contactKeyword.value) void searchContacts()
-}
-
-async function searchContacts() {
-  const keyword = contactKeyword.value.trim()
-  if (!keyword || searchingContacts.value) return
-  const version = bindingVersion
-  searchingContacts.value = true
-  contactPeople.value = []
-  searchedContacts.value = false
-  try {
-    const matches = await serviceContactApi.people(keyword)
-    if (version === bindingVersion) {
-      contactPeople.value = matches
-      searchedContacts.value = true
-    }
-  } catch (e: any) { if (version === bindingVersion) toast(e.message) }
-  finally { if (version === bindingVersion) searchingContacts.value = false }
+function renameContact(member: ServiceContactMember, name: string) {
+  if (member.name === name) return
+  member.name = name
+  member.userId = null
 }
 
 function bindContact(member: ServiceContactMember, person: ServiceContactPerson) {
   member.name = person.name
   member.userId = person.id
-  closeBinding()
 }
 async function loadUsers() {
   const r = await adminApi.users({ keyword: keyword.value, status: status.value, page: userPage.value })
@@ -155,6 +154,12 @@ async function loadSection() {
   loading.value = true
   error.value = ''
   try {
+    if (!canViewSection.value) return
+    if (tab.value === 'jobs') {
+      const value = await adminApi.jobs()
+      if (version === loadVersion) applyJobs(value)
+      return
+    }
     if (!settings.value) {
       if (auth.can("settings.manage")) applySettings(await adminApi.settings())
       else { settings.value = {}; baseline.value = snapshot() }
@@ -173,16 +178,43 @@ async function loadSection() {
     }
     else if (section === 'audit') await loadAudit()
     else if (section === 'storage') storage.value = await adminApi.storage()
-    else if (section === 'jobs' || !section) jobs.value = await adminApi.jobs()
   } catch (e: any) { if (version === loadVersion) error.value = e.message }
   finally { if (version === loadVersion) loading.value = false }
+}
+function applyJobs(value: JobStatus) {
+  jobs.value = value
+  jobDraft.value = { ...value.settings }
+  if (!settingsDirty.value) settings.value = null
+}
+function changeScanInterval(event: Event) {
+  const value = (event.target as HTMLSelectElement).value
+  if (jobDraft.value && value) jobDraft.value.slaCron = value
+}
+function changeContactTime(event: Event) {
+  const value = (event.target as HTMLInputElement).value
+  if (!jobDraft.value || !value) return
+  const [hours, minutes] = value.split(':').map(Number)
+  jobDraft.value.contactCron = '0 ' + minutes + ' ' + hours + ' * * ?'
 }
 async function saveSettings() {
   saving.value = true
   error.value = ''
   try {
+    if (tab.value === 'jobs') {
+      if (!jobDraft.value || !isSuperAdmin.value) return
+      const form = { ...jobDraft.value, slaCron: jobDraft.value.slaCron.trim(), contactCron: jobDraft.value.contactCron.trim() }
+      if (!form.slaCron || !form.contactCron) throw new Error('请填写两个任务的 Cron 表达式')
+      if (![form.slaReminderHours, form.confirmationReminderHours].every(hours => Number.isInteger(hours) && hours >= 1 && hours <= 720))
+        throw new Error('两个提醒间隔均需填写 1–720 的整数小时')
+      applyJobs(await adminApi.saveJobs(form))
+      toast('定时任务配置已保存')
+      return
+    }
     if (settings.value.duty?.members.some((member: { position: string; name: string }) => !member.position || !member.name))
       throw new Error('请填写每一行的岗位和人员姓名，或移除空白行')
+    const calendar = settings.value.slaCalendar
+    if (calendar && (!calendar.weekdays.length || !calendar.start || !calendar.end || calendar.start >= calendar.end))
+      throw new Error('请选择至少一个工作日，并设置有效的起止时间')
     const categoriesByType: TicketCategoriesByType = Object.create(null)
     for (const type of TICKET_TYPES) {
       const cats: Record<string, string[]> = Object.create(null)
@@ -203,14 +235,14 @@ async function saveSettings() {
 }
 async function reloadSettings() {
   if (dirty.value && !window.confirm('放弃未保存的配置并重新加载？')) return
-  try { if (auth.can("settings.manage")) applySettings(await adminApi.settings()); await loadSection() }
+  try { if (tab.value !== 'jobs' && auth.can('settings.manage')) applySettings(await adminApi.settings()); await loadSection() }
   catch (e: any) { error.value = e.message }
 }
 function openEditor(kind: typeof dialog.value, row?: any) {
   Object.keys(edit).forEach(k => delete edit[k])
   if (kind === 'user') Object.assign(edit, row, {
     role: row.role || 'USER',
-    deptId: row.deptId || 0, handoverId: '', skill: row.skill || '', location: row.location || ''
+    deptId: row.deptId || 0, handoverId: null, skill: row.skill || '', location: row.location || ''
   })
   if (kind === 'dept') Object.assign(edit, { id: null, name: '', parentId: 0, sort: 0 }, row || {})
   if (kind === 'code') Object.assign(edit, { id: null, category: '', code: '', name: '', sort: 0 }, row || {})
@@ -260,14 +292,17 @@ async function sync(mode: 'dry' | 'demo' | 'live') {
   finally { syncing.value = '' }
 }
 function deptName(id: number) { return departments.value.find(d => d.id === id)?.name || (id ? String(id) : '根目录') }
-function jobRun(key: string) { return jobs.value.runs?.find((r: any) => (r.jobKey || r.job_key) === key) }
+const jobRuns = computed(() => Object.fromEntries((jobs.value?.runs || []).map(run => [run.jobKey || run.job_key, run])))
+function formatNextRun(value: string) {
+  return new Date(value).toLocaleString('zh-CN', { timeZone: jobs.value?.timezone, hourCycle: 'h23' })
+}
 function formatBytes(bytes: number) { return bytes >= 1048576 ? (bytes / 1048576).toFixed(2) + ' MB' : Number(bytes || 0).toLocaleString() + ' B' }
 
 onMounted(async () => {
   await loadSection()
   try { handoverCats.value = await assetCategoryApi.list() } catch { /* 无资产查看权限时忽略 */ }
 })
-watch(tab, () => { dialog.value = ''; closeBinding(); void loadSection() })
+watch(tab, () => { dialog.value = ''; void loadSection() })
 </script>
 
 <template>
@@ -283,13 +318,12 @@ watch(tab, () => { dialog.value = ''; closeBinding(); void loadSection() })
     </div>
     <div v-if="loading" class="empty" role="status">正在加载…</div>
 
-    <template v-if="settings && !loading && canViewSection">
+    <template v-if="(settings || tab === 'jobs') && !loading && canViewSection">
       <template v-if="!tab">
         <section class="panel">
           <h3>运行开关</h3>
           <label class="setting-row"><span>提报前知识库推荐</span><input v-model="settings.kbRecommendEnabled" type="checkbox" role="switch" /></label>
-          <label class="setting-row"><span>超时工单定时扫描</span><input v-model="settings.slaScanEnabled" type="checkbox" role="switch" /></label>
-          <label class="setting-row"><span>通讯录每日同步</span><input v-model="settings.contactSyncEnabled" type="checkbox" role="switch" /></label>
+          <BadgeTitleSetting v-if="isSuperAdmin" />
           <div class="setting-row"><span>登录方式</span><b>{{ auth.config?.demoEnabled ? '演示登录' : '钉钉免登' }}</b></div>
           <p class="hint">钉钉接入凭据与登录方式由部署配置控制。页面中的修改保存后生效。</p>
         </section>
@@ -337,34 +371,20 @@ watch(tab, () => { dialog.value = ''; closeBinding(); void loadSection() })
         <p v-if="contactError" class="hint" role="status">{{ contactError }}</p>
         <p v-if="!settings.duty.members.length" class="hint">暂无联系人。</p>
         <div v-for="(member, index) in settings.duty.members" :key="index" class="duty-row">
-          <label class="field">岗位
-            <input v-model.trim="member.position" class="inp" maxlength="32" placeholder="例如 服务台" :disabled="saving" />
-          </label>
-          <label class="field">人员姓名
-            <input v-model.trim="member.name" class="inp" maxlength="64" :disabled="saving" @input="member.userId = null; closeBinding()" />
-          </label>
-          <div class="actions contact-actions">
-            <button class="btn sm" type="button" :disabled="saving" @click="binding === index ? closeBinding() : openBinding(index)">
-              {{ member.userId ? '更换关联' : '关联钉钉' }}
-            </button>
-            <button class="btn sm" type="button" :disabled="saving" :aria-label="`移除第 ${index + 1} 位联系人`"
-              @click="closeBinding(); settings.duty.members.splice(index, 1)">移除</button>
+          <div class="duty-fields">
+            <label class="field">岗位
+              <input v-model.trim="member.position" class="inp" maxlength="32" placeholder="例如 服务台" :disabled="saving" />
+            </label>
+            <PersonPicker label="人员姓名" :search="serviceContactApi.people" :manual-name="member.name" :disabled="saving"
+              :selected="member.userId ? { id: member.userId, name: member.name } : undefined"
+              @text-change="renameContact(member, $event)" @select="bindContact(member, $event)" />
           </div>
+          <button class="btn sm contact-remove" type="button" :disabled="saving" :aria-label="`移除第 ${index + 1} 位联系人`"
+            @click="settings.duty.members.splice(index, 1)">移除</button>
           <div v-if="member.name" class="contact-status">
+            <span v-if="member.userId && contactStatus(member)?.status !== 'UNLINKED'" class="pill b-blue">已关联钉钉</span>
             <ContactLeaveStatus v-if="contactStatus(member)" :contact="contactStatus(member)" />
             <small v-else class="muted">{{ contactLoading ? '正在查询请假状态…' : '保存后查询请假状态' }}</small>
-          </div>
-          <div v-if="binding === index" class="contact-binding">
-            <form class="toolbar" @submit.prevent="searchContacts">
-              <input v-model="contactKeyword" class="inp" placeholder="姓名或工号" maxlength="64" aria-label="搜索钉钉通讯录" />
-              <button class="btn sm" :disabled="searchingContacts || saving || !contactKeyword.trim()">搜索</button>
-            </form>
-            <div v-if="contactPeople.length" class="actions contact-actions">
-              <button v-for="person in contactPeople" :key="person.id" class="btn sm" type="button" :disabled="saving" @click="bindContact(member, person)">
-                {{ [person.name, person.department, person.employeeNo].filter(Boolean).join(' · ') }}
-              </button>
-            </div>
-            <small v-else-if="searchedContacts" class="muted">没有匹配的钉钉通讯录人员。</small>
           </div>
         </div>
         <div class="field-grid">
@@ -381,7 +401,7 @@ watch(tab, () => { dialog.value = ''; closeBinding(); void loadSection() })
       <section v-else-if="tab === 'users'" class="panel">
         <div class="section-head"><h3>用户与角色</h3><span class="muted">共 {{ userTotal }} 人</span></div>
         <form class="toolbar" @submit.prevent="userPage = 1; loadSection()">
-          <input v-model="keyword" class="inp" placeholder="姓名或工号" aria-label="姓名或工号" />
+          <input v-model="keyword" class="inp" placeholder="姓名、拼音、首字母、部门或工号" aria-label="搜索用户" />
           <select v-model="status" class="sel" aria-label="用户状态"><option value="">全部状态</option><option value="ACTIVE">在职</option><option value="DISABLED">停用</option></select>
           <button class="btn" type="submit">查询</button>
         </form>
@@ -393,7 +413,7 @@ watch(tab, () => { dialog.value = ''; closeBinding(); void loadSection() })
             <td>{{ u.deptName || '未分配' }}</td>
             <td>{{ roleNames[u.role] || u.role }}</td>
             <td>{{ u.status === 'ACTIVE' ? '在职' : '停用' }}</td>
-            <td><button class="btn sm" @click="openEditor('user', u)">编辑</button></td>
+            <td><button v-if="u.role !== 'SUPER_ADMIN' || isSuperAdmin" class="btn sm" @click="openEditor('user', u)">编辑</button></td>
           </tr><tr v-if="!users.length"><td colspan="5" class="empty">没有匹配的用户</td></tr></tbody>
         </table></div>
         <div class="pagination"><button class="btn sm" :disabled="userPage <= 1" @click="userPage--; loadSection()">上一页</button><span>第 {{ userPage }} 页</span><button class="btn sm" :disabled="userPage * 20 >= userTotal" @click="userPage++; loadSection()">下一页</button></div>
@@ -426,10 +446,31 @@ watch(tab, () => { dialog.value = ''; closeBinding(); void loadSection() })
       <RolePermissions v-else-if="tab === 'matrix'" />
 
       <section v-else-if="tab === 'sla'" class="panel">
-        <h3>SLA 解决时限</h3><p class="hint">按自然小时计算。修改仅影响新建工单，已有工单保留原时限。</p>
-        <div class="field-grid">
-          <label v-for="p in [1, 2, 3, 4]" :key="p" class="field">P{{ p }}（小时）<input v-model.number="settings['p' + p + 'Hours']" class="inp" type="number" min="1" max="8760" /></label>
+        <h3>SLA 工作日历</h3><p class="hint">按北京时间计时。工作日历和目标时限在建单时确定。</p>
+        <div class="week-select" role="group" aria-label="SLA 工作日">
+          <label v-for="(label, index) in weekLabels" :key="label"><input v-model="settings.slaCalendar.weekdays" type="checkbox" :value="index + 1" />{{ label }}</label>
         </div>
+        <div class="field-grid">
+          <label class="field">工作开始<input v-model="settings.slaCalendar.start" class="inp" type="time" /></label>
+          <label class="field">工作结束<input v-model="settings.slaCalendar.end" class="inp" type="time" /></label>
+        </div>
+        <label class="setting-row"><span>等待报修人补充信息时暂停计时</span><input v-model="settings.slaCalendar.pauseForInfo" type="checkbox" role="switch" /></label>
+        <div class="field-grid">
+          <label class="field">节假日<input v-model="selectedHoliday" class="inp" type="date" /></label>
+          <button class="btn sm holiday-add" type="button" :disabled="!selectedHoliday || settings.slaCalendar.holidays.length >= 366" @click="addHoliday">添加节假日</button>
+        </div>
+        <div v-if="settings.slaCalendar.holidays.length" class="week-select holiday-list">
+          <button v-for="date in settings.slaCalendar.holidays" :key="date" class="btn sm" type="button" :aria-label="'移除节假日 ' + date"
+            @click="settings.slaCalendar.holidays = settings.slaCalendar.holidays.filter((day: string) => day !== date)">{{ date }} ×</button>
+        </div>
+        <h3 class="sla-target-heading">目标时限（工作小时）</h3>
+        <div class="table-wrap"><table class="tb">
+          <thead><tr><th>优先级</th><th>首次响应</th><th>解决</th></tr></thead>
+          <tbody><tr v-for="p in [1,2,3,4]" :key="p"><td>P{{ p }}</td>
+            <td><input v-model.number="settings.slaCalendar.responseHours[p-1]" class="inp" type="number" min="1" max="8760" :aria-label="'P' + p + ' 首次响应时限'" /></td>
+            <td><input v-model.number="settings['p' + p + 'Hours']" class="inp" type="number" min="1" max="8760" :aria-label="'P' + p + ' 解决时限'" /></td>
+          </tr></tbody>
+        </table></div>
         <p class="hint">需满足 P1 ≤ P2 ≤ P3 ≤ P4。信息安全类始终按 P1 处理。</p>
         <h3>自动定级矩阵</h3>
         <div class="table-wrap"><table class="tb">
@@ -473,16 +514,48 @@ watch(tab, () => { dialog.value = ''; closeBinding(); void loadSection() })
         <p class="hint">支持 JPG、PNG、GIF、WebP 和 PDF。修改不会删除已有附件；所有文件访问都校验登录身份和业务权限。</p>
       </section>
 
-      <section v-else-if="tab === 'jobs'" class="panel">
+      <section v-else-if="tab === 'jobs' && jobs && jobDraft" class="panel">
         <h3>定时任务</h3>
-        <div v-for="job in [{ key: 'sla', label: '超时工单扫描', setting: 'slaScanEnabled', cron: jobs.slaCron }, { key: 'contacts', label: '通讯录每日同步', setting: 'contactSyncEnabled', cron: jobs.contactCron }]" :key="job.key" class="job">
-          <label class="setting-row"><b>{{ job.label }}</b><input v-model="settings[job.setting]" type="checkbox" role="switch" /></label>
-          <p class="hint">计划：<span class="mono">{{ job.cron }}</span></p>
-          <p v-if="jobRun(job.key)" class="hint">最近执行：{{ jobRun(job.key).finishedAt || jobRun(job.key).finished_at }} · {{ jobRun(job.key).status === 'SUCCESS' ? '成功' : '失败' }} · {{ jobRun(job.key).message }}</p>
+        <p class="hint">按北京时间执行，保存后生效。已开始执行的任务会继续完成。</p>
+        <div v-for="job in jobRows" :key="job.key" class="job">
+          <label class="setting-row"><b>{{ job.label }}</b><input v-model="jobDraft[job.enabled]" :disabled="saving" type="checkbox" role="switch" /></label>
+          <div class="field-grid job-fields">
+            <label v-if="job.key === 'sla'" class="field">扫描频率
+              <select class="sel" :value="scanInterval" :disabled="saving" @change="changeScanInterval">
+                <option value="" disabled>自定义 Cron</option>
+                <option v-for="item in scanIntervals" :key="item.cron" :value="item.cron">{{ item.label }}</option>
+              </select>
+            </label>
+            <label v-else class="field">每日同步时间
+              <input class="inp" type="time" :value="contactTime" :disabled="saving" @change="changeContactTime" />
+            </label>
+            <label class="field">Cron 表达式
+              <input v-model="jobDraft[job.cron]" class="inp mono" :disabled="saving" :aria-label="job.label + ' Cron 表达式'" type="text" maxlength="120" spellcheck="false" autocomplete="off" />
+            </label>
+          </div>
+          <p v-if="jobs[job.nextRun] && !jobDirty" class="hint">下次执行：{{ formatNextRun(jobs[job.nextRun]!) }}</p>
+          <p v-if="jobRuns[job.key]" class="hint">最近执行：{{ jobRuns[job.key].finishedAt || jobRuns[job.key].finished_at }} · {{ jobRuns[job.key].status === 'SUCCESS' ? '成功' : '失败' }} · {{ jobRuns[job.key].message }}</p>
           <p v-else class="hint">暂无执行记录</p>
+          <template v-if="job.key === 'sla'">
+            <div class="field-grid job-fields">
+              <label class="field">超时催办间隔（小时）
+                <input v-model.number="jobDraft.slaReminderHours" class="inp" type="number" min="1" max="720" step="1" :disabled="saving" />
+              </label>
+              <label class="field">待确认提醒间隔（小时）
+                <input v-model.number="jobDraft.confirmationReminderHours" class="inp" type="number" min="1" max="720" step="1" :disabled="saving" />
+              </label>
+            </div>
+            <p class="hint">首次发现超时即提醒，之后按间隔催办。处理完成后，按待确认间隔提醒报修人。通知随扫描计划发送。</p>
+          </template>
           <p v-if="job.key === 'contacts' && !jobs.dingTalkEnabled" class="hint">当前未启用钉钉接入，此任务会跳过。</p>
         </div>
-        <p class="hint">开关保存后作用于下一次调度。通讯录手动同步入口位于“部门与通讯录”。</p>
+        <div class="job" v-if="jobs.borrowDueNextRun">
+          <div class="setting-row"><b>借用设备到期提醒</b></div>
+          <p class="hint">每天 09:00 检查，提前 3 天和逾期后各提醒一次。</p>
+          <p class="hint">下次执行：{{ formatNextRun(jobs.borrowDueNextRun) }}</p>
+          <p v-if="jobRuns['borrow-due']" class="hint">最近执行：{{ jobRuns['borrow-due'].finishedAt || jobRuns['borrow-due'].finished_at }} · {{ jobRuns['borrow-due'].message }}</p>
+        </div>
+        <p class="hint">Cron 依次填写秒、分、时、日、月、星期，也可使用每日时间或扫描频率快捷填写。通讯录可在「部门与通讯录」手动同步。</p>
       </section>
     </template>
     <div v-else-if="!loading && !canViewSection" class="empty">未找到该管理分区</div>
@@ -492,10 +565,12 @@ watch(tab, () => { dialog.value = ''; closeBinding(); void loadSection() })
         <div class="dlg-h">{{ dialog === 'user' ? '编辑用户 · ' + edit.name : dialog === 'dept' ? '部门信息' : '解决代码' }}<button class="close" type="button" :disabled="saving" @click="dialog = ''">×</button></div>
         <div class="dlg-b">
           <template v-if="dialog === 'user'">
-            <label class="field">角色<select v-model="edit.role" class="sel" required><option v-for="(label, role) in roleNames" :key="role" :value="role">{{ label }}</option></select></label>
+            <label class="field">角色<select v-model="edit.role" class="sel" required><option v-for="[role, label] in roleOptions" :key="role" :value="role">{{ label }}</option></select></label>
             <label class="field">部门<select v-model="edit.deptId" class="sel"><option :value="0">未分配</option><option v-for="d in departments" :key="d.id" :value="d.id">{{ d.name }}</option></select></label>
             <label class="field">状态<select v-model="edit.status" class="sel"><option value="ACTIVE">在职</option><option value="DISABLED">停用</option></select></label>
-            <label class="field">未结工单交接给<select v-model="edit.handoverId" class="sel"><option value="">不交接（有未结工单时必须选择）</option><option v-for="e in engineers.filter(e => e.id !== edit.id)" :key="e.id" :value="e.id">{{ e.name }}</option></select></label>
+            <PersonPicker label="未结工单交接给" :options="handoverEngineers" :disabled="saving"
+              :selected="handoverEngineers.find(e => e.id === edit.handoverId)"
+              @select="edit.handoverId = $event.id" @clear="edit.handoverId = null" />
             <label class="field">技能<input v-model="edit.skill" class="inp" maxlength="128" /></label>
             <label class="field">位置<input v-model="edit.location" class="inp" maxlength="64" /></label>
           </template>
@@ -518,15 +593,19 @@ watch(tab, () => { dialog.value = ''; closeBinding(); void loadSection() })
 </template>
 
 <style scoped>
-.duty-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto; align-items:end; gap:10px; }
-.duty-row .field { margin:0; }
+.duty-row { display:grid; grid-template-columns:minmax(0,1fr) auto; grid-template-areas:'fields remove' 'status status'; align-items:end; gap:7px 10px; }
+.duty-fields { grid-area:fields; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-items:start; gap:10px; }
+.duty-fields > .field { margin:0; gap:6px; color:var(--t2); font-weight:600; }
 .duty-row + .duty-row { margin-top:12px; }
 .duty-settings .section-head h3 { margin:0; }
 .contact-actions { flex-wrap:wrap; }
-.contact-status, .contact-binding { grid-column:1 / -1; }
-.contact-binding { padding:10px; background:#f6f8fb; border-radius:10px; }
-.contact-binding .toolbar { margin-bottom:6px; }
-@media (max-width:650px) { .duty-row { grid-template-columns:repeat(2,minmax(0,1fr)); }.duty-row > .contact-actions { grid-column:1 / -1; }.duty-settings .section-head { flex-wrap:wrap; } }
+.contact-remove { grid-area:remove; justify-self:end; margin-bottom:4px; }
+.contact-status { grid-area:status; display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; min-width:0; }
+@media (max-width:650px) {
+  .duty-row { grid-template-areas:'fields fields' 'status remove'; align-items:center; }
+  .contact-remove { margin-bottom:0; }
+  .duty-settings .section-head { flex-wrap:wrap; }
+}
 .handover-row { display:flex; gap:14px; padding:10px 0; border-bottom:1px solid var(--line2); }
 .handover-row:last-of-type { border-bottom:0; }
 .hr-name { flex:0 0 96px; font-size:13px; font-weight:600; }
@@ -559,6 +638,11 @@ input[type=checkbox] { accent-color:#0071e3; width:18px; height:18px; cursor:poi
 .audit-detail { white-space:pre-wrap; overflow-wrap:anywhere; max-width:480px; margin:8px 0; }summary { cursor:pointer; }
 .storage-stats { display:flex; gap:36px; padding:14px 0; }.storage-stats b { display:block; font-size:25px; }.storage-stats span { display:block; font-size:12px; color:var(--t2); margin-top:6px; }
 .sync-result { background:#f3f6fa; padding:14px; border-radius:9px; font-size:12px; line-height:1.8; }.job { padding:8px 0 16px; }
+.job-fields { margin-top:12px; }
+.week-select { display:flex; flex-wrap:wrap; gap:10px 14px; margin:10px 0 14px; }
+.week-select label { display:flex; align-items:center; gap:5px; }
+.holiday-add { align-self:end; justify-self:start; }
+.sla-target-heading { margin-top:18px; }
 .editor { max-width:560px; }.editor .dlg-b { max-height:65vh; overflow:auto; }.close { background:none; border:0; font-size:24px; cursor:pointer; float:right; }
 fieldset { border:1px solid var(--line); padding:10px; border-radius:8px; }legend { padding:0 5px; font-size:13px; }.check { display:inline-flex; align-items:center; gap:7px; margin:6px 12px 6px 0; font-size:13px; }
 @media(max-width:650px) { .field-grid { grid-template-columns:1fr; }.category-row { grid-template-columns:1fr auto; }.category-row .ta { grid-column:1 / -1; grid-row:2; }.panel { padding:15px; }.page-head { align-items:start; } }

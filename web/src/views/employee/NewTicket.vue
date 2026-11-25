@@ -3,6 +3,8 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { assetApi, attachmentApi, kbApi, metaApi, ticketApi } from '../../api'
 import { toast } from '../../utils/toast'
+import { tutorialPractice, tutorialWorkflow } from '../../utils/tutorialPractice'
+import { practiceAssets } from '../../config/workflows'
 import { statusName } from '../../utils/dict'
 import { TICKET_TYPES, type TicketCategoriesByType } from '../../config/ticket-types'
 import { useAuthStore } from '../../stores/auth'
@@ -11,6 +13,7 @@ import AssetPicker from '../../components/AssetPicker.vue'
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
+const isExample = tutorialWorkflow.value === 'repair'
 const type = ref('INCIDENT')
 const categoriesByType = ref<TicketCategoriesByType>({})
 const categories = computed(() => categoriesByType.value[type.value] || {})
@@ -72,7 +75,7 @@ watch(() => form.cat2, clearRecommendations)
 /** 同一人对同一设备只允许一张未结工单：选中设备后先查一遍 */
 async function checkOpenTicket() {
   openTicket.value = null
-  if (!form.assetNo) return
+  if (!form.assetNo || isExample) return
   checkingOpen.value = true
   try {
     const page = await ticketApi.list({ mine: true, assetNo: form.assetNo, page: 1, size: 5 })
@@ -104,6 +107,13 @@ function clearAsset() {
 }
 
 onMounted(async () => {
+  if (isExample) {
+    assets.value = practiceAssets(auth.user?.name || '', auth.user?.id).slice(0, 1)
+    categoriesByType.value = { INCIDENT: { 网络: ['无线连不上', '其他'], 硬件: ['无法开机', '其他'] } }
+    resetCategory()
+    loadingCategories.value = false
+    return
+  }
   try {
     const [c, a, r] = await Promise.all([metaApi.categoriesByType(), assetApi.list({}), metaApi.runtime()])
     runtime.value = r
@@ -127,13 +137,15 @@ function onCat1Change() {
 }
 
 async function checkKb() {
-  if (!form.description.trim()) {
+  if (!tutorialPractice.value && !form.description.trim()) {
     toast('先简单描述一下问题，再找解决办法')
     return
   }
   try {
     const version = ++recommendationVersion
-    const list = await kbApi.recommend({ cat1: form.cat1, desc: form.description })
+    const list = isExample
+      ? [{ id: -1, title: '示例：无线网络连接失败', summary: '确认无线网络已打开，并尝试断开后重新连接。', helpful: 0 }]
+      : await kbApi.recommend(tutorialPractice.value ? {} : { cat1: form.cat1, desc: form.description })
     if (version !== recommendationVersion) return
     kbList.value = list || []
     kbHitIds.value = kbList.value.map((x) => x.id)
@@ -270,10 +282,10 @@ function removeFile(i: number) {
       <div class="fld">
         <label class="lb">问题分类<i>*</i></label>
         <div class="row">
-          <select v-model="form.cat1" class="sel" style="flex: 1" aria-label="问题大类" :disabled="loadingCategories || submitting || !!categoryError" @change="onCat1Change">
+          <select v-model="form.cat1" data-workflow-step="repair-major" class="sel" style="flex: 1" aria-label="问题大类" :disabled="loadingCategories || submitting || !!categoryError" @change="onCat1Change">
             <option v-for="(v, k) in categories" :key="k" :value="k">{{ k }}</option>
           </select>
-          <select v-model="form.cat2" class="sel" style="flex: 1" aria-label="问题子分类" :disabled="loadingCategories || submitting || !!categoryError">
+          <select v-model="form.cat2" data-workflow-step="repair-sub" class="sel" style="flex: 1" aria-label="问题子分类" :disabled="loadingCategories || submitting || !!categoryError">
             <option v-for="c in cat2List" :key="c" :value="c">{{ c }}</option>
           </select>
         </div>
@@ -287,8 +299,8 @@ function removeFile(i: number) {
 
       <div class="fld">
         <label class="lb">影响范围<i>*</i></label>
-        <div class="opts">
-          <div
+        <div class="opts" data-workflow-step="repair-impact">
+          <button type="button"
             v-for="o in [
               { v: 'SELF', l: '只影响我' },
               { v: 'DEPT', l: '影响部门' },
@@ -298,17 +310,18 @@ function removeFile(i: number) {
             :key="o.v"
             class="opt"
             :class="{ sel: form.impact === o.v }"
+            :aria-pressed="form.impact === o.v"
             @click="form.impact = o.v"
           >
             {{ o.l }}
-          </div>
+          </button>
         </div>
       </div>
 
       <div class="fld">
         <label class="lb">还能不能干活<i>*</i></label>
-        <div class="opts">
-          <div
+        <div class="opts" data-workflow-step="repair-work">
+          <button type="button"
             v-for="o in [
               { v: 'FINE', l: '不受影响' },
               { v: 'SLOW', l: '能凑合' },
@@ -317,17 +330,18 @@ function removeFile(i: number) {
             :key="o.v"
             class="opt"
             :class="{ sel: form.workImpact === o.v }"
+            :aria-pressed="form.workImpact === o.v"
             @click="form.workImpact = o.v"
           >
             {{ o.l }}
-          </div>
+          </button>
         </div>
         <div class="small muted" style="margin-top: 5px">优先级由这两项自动计算，不需要你判断紧急程度</div>
       </div>
 
       <div class="fld">
         <label for="fault-location" class="lb">故障位置<i>*</i></label>
-        <input id="fault-location" ref="locationInput" v-model="form.location" class="inp" type="text" required maxlength="64"
+        <input id="fault-location" ref="locationInput" v-model="form.location" data-workflow-step="repair-location" class="inp" type="text" required maxlength="64"
           placeholder="例如：A座3楼财务办公室，靠窗第2个工位"
           :aria-invalid="!!locationError" aria-describedby="fault-location-help fault-location-error" :disabled="submitting" />
         <p id="fault-location-help" class="small muted" style="margin:5px 0 0">请写清楼栋、楼层和房间/工位，方便工程师找到现场。</p>
@@ -337,7 +351,7 @@ function removeFile(i: number) {
       <div class="fld">
         <label class="lb">关联设备 <small class="muted">（选填）</small></label>
         <div class="asset-pick">
-          <button type="button" class="asset-pick-btn" :disabled="submitting" aria-haspopup="dialog" @click="openAssetPicker">
+          <button type="button" class="asset-pick-btn" data-workflow-step="repair-asset" :disabled="submitting" aria-haspopup="dialog" @click="openAssetPicker">
             <span v-if="selectedAsset" class="asset-pick-val">
               <b>{{ selectedAsset.name }}</b>
               <span class="mono">{{ selectedAsset.no }}</span>
@@ -358,15 +372,17 @@ function removeFile(i: number) {
         <label class="lb">问题描述<i>*</i></label>
         <textarea
           v-model="form.description"
+          data-workflow-step="repair-description"
+          aria-label="问题描述"
           class="ta"
           placeholder="例：打印机显示脱机，重启过仍然不行，影响部门打印"
         />
-        <button v-if="runtime.kbRecommendEnabled" class="btn sm" style="margin-top: 8px" :disabled="resolvingKbId !== null || submitting" @click="checkKb">先看看有没有解决办法</button>
+        <button v-if="runtime.kbRecommendEnabled" class="btn sm" data-workflow-step="repair-kb" style="margin-top: 8px" :disabled="resolvingKbId !== null || submitting" @click="checkKb">先看看有没有解决办法</button>
       </div>
 
       <div class="fld" style="margin-bottom: 4px">
         <label class="lb">现场截图 <small class="muted">（选填，最多 {{ runtime.maxAttachments }} 个，单个 ≤{{ runtime.maxUploadMb }}MB）</small></label>
-        <div class="thumbs">
+        <div class="thumbs" data-workflow-step="repair-attachment">
           <div v-for="(src, i) in previews" :key="i" class="thumb">
             <img :src="src" alt="" />
             <span class="del" @click="removeFile(i)">×</span>
@@ -380,7 +396,7 @@ function removeFile(i: number) {
       </div>
     </div>
 
-    <button class="btn pri block" style="margin-top: 14px" :disabled="submitting || resolvingKbId !== null || loadingCategories || !!categoryError || !form.cat2 || !!openTicket" @click="submit">
+    <button class="btn pri block" data-workflow-step="repair-submit" style="margin-top: 14px" :disabled="submitting || resolvingKbId !== null || loadingCategories || !!categoryError || !form.cat2 || !!openTicket" @click="submit">
       {{ submitting ? '提交中…' : (openTicket ? '该设备已有进行中的工单' : '提交报修') }}
     </button>
 
@@ -400,7 +416,7 @@ function removeFile(i: number) {
             v-model:category="pickCategory"
             :assets="assets"
             :categories="[]"
-            :my-name="auth.user?.name"
+            :my-id="auth.user?.id"
             empty-text="当前没有可关联的设备。"
           />
         </div>
@@ -408,7 +424,7 @@ function removeFile(i: number) {
           <span class="small muted">{{ pickNo ? '已选择 ' + pickNo : '尚未选择设备' }}</span>
           <div class="asset-pick-actions">
             <button type="button" class="btn" @click="closeAssetPicker">取消</button>
-            <button type="button" class="btn pri" :disabled="!pickNo" @click="confirmAsset">确定关联</button>
+            <button type="button" class="btn pri" data-workflow-step="repair-asset-confirm" :disabled="!pickNo" @click="confirmAsset">确定关联</button>
           </div>
         </div>
       </div>
@@ -436,7 +452,7 @@ function removeFile(i: number) {
           </div>
         </div>
         <div class="dlg-f">
-          <button type="button" class="btn" :disabled="resolvingKbId !== null" @click="closeKnowledge">还是不行，继续报修</button>
+          <button type="button" class="btn" data-workflow-step="repair-kb-close" :disabled="resolvingKbId !== null" @click="closeKnowledge">还是不行，继续报修</button>
         </div>
       </div>
     </div>

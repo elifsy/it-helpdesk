@@ -15,9 +15,9 @@
     values(#{dingUserId},#{name},#{employeeNo},#{deptId},#{deptName},#{mobile},#{email},#{role},#{skill},#{location},'ACTIVE')
   </insert>
   <select id="listEngineers" resultType="com.tzme.helpdesk.domain.User">
-    select * from sys_user where status = 'ACTIVE' and role in ('IT','ADMIN') order by id
+    select * from sys_user where status = 'ACTIVE' and role in ('IT','ADMIN','SUPER_ADMIN') order by id
   </select>
   <select id="listByRole" resultType="com.tzme.helpdesk.domain.User">
-    select * from sys_user where status = 'ACTIVE' and role like concat('%', #{role}, '%') order by id
+    select * from sys_user where status = 'ACTIVE' and (role = #{role} or (#{role} = 'ADMIN' and role = 'SUPER_ADMIN')) order by id
   </select>
 </mapper>

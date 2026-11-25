@@ -40,10 +40,10 @@ public class AssetRequestService {
     private final DingApprovalService dingApproval;
     private final RuntimeSettingsService settings;
 
-    public List<AssetRequest> list(String status, Boolean mine, String type) {
+    public List<AssetRequest> list(String status, Boolean mine, String type, String no) {
         LoginUser u = CurrentUser.require();
         boolean mineFlag = Boolean.TRUE.equals(mine) || u.isEmployeeOnly();
-        var rows = requestMapper.list(status, mineFlag ? u.name() : null, type);
+        var rows = requestMapper.list(status, mineFlag ? u.name() : null, mineFlag ? u.id() : null, type, no);
         if (!com.tzme.helpdesk.security.Roles.isItOrAdmin(u.role())) rows.forEach(row -> row.setPendingReportCount(null));
         return rows;
     }
@@ -59,7 +59,7 @@ public class AssetRequestService {
         Asset a = assetMapper.findByNoForUpdate(req.getAssetNo());
         if (a == null) throw new BizException(404, "资产不存在");
         if(req.getCategory()!=null && !req.getCategory().equals(a.getCategory())) throw new BizException(409,"设备分类已变化，请重新选择设备");
-        assetService.assertAllowed(a, type, u.name());
+        assetService.assertAllowed(a, type, u.id());
         assertNotReserved(a.getNo());
 
         // 同一人对同一设备只允许一条待审批申请，避免重复提交
@@ -86,8 +86,7 @@ public class AssetRequestService {
             if (spare == null) throw new BizException(404, "替换设备不存在");
             assertNotReserved(spare.getNo());
             if (!"闲置".equals(spare.getStatus())
-                    || (spare.getUserName() != null && !spare.getUserName().isBlank())
-                    || (spare.getBorrower() != null && !spare.getBorrower().isBlank()))
+                    || spare.hasUser() || spare.hasBorrower())
                 throw new BizException("替换设备必须处于闲置状态");
         }
 
@@ -108,11 +107,11 @@ public class AssetRequestService {
         boolean dingStarted = dingApproval.tryStart(r);
         incomingNotifications.newAssetRequest(type, TYPE_NAME.get(type), r.getNo(), a.getName(), u.name(), dingStarted);
         if (dingStarted) {
-            notifyService.send(u.name(), "申请已提交",
+            notifyService.send(u.id(), u.name(), "申请已提交",
                     r.getNo() + " " + TYPE_NAME.get(type) + " 已提交，已进入钉钉审批（" + r.getDingInstanceId()
                             + "），审批结果会自动同步。", "ASSET", r.getNo());
         } else {
-            notifyService.send(u.name(), "申请已提交",
+            notifyService.send(u.id(), u.name(), "申请已提交",
                     r.getNo() + " " + TYPE_NAME.get(type) + " 已提交，等待审批。", "ASSET", r.getNo());
         }
         return requestMapper.findById(r.getId());
@@ -150,7 +149,8 @@ public class AssetRequestService {
         }
         java.util.Map<String, Asset> locked = lockAssets(r, newNo);
         Asset a = locked.get(r.getAssetNo());
-        assetService.assertAllowed(a, r.getType(), r.getApplicant());
+        r.setApplicantId(assetService.resolveApplicant(r.getApplicantId(), r.getApplicant()).getId());
+        assetService.assertAllowed(a, r.getType(), r.getApplicantId());
         if ("BORROW".equals(r.getType()) && (r.getExpectReturn() == null || r.getExpectReturn().isBefore(LocalDate.now()))) {
             throw new BizException("约定归还日期已过期，请重新申请");
         }
@@ -193,16 +193,17 @@ public class AssetRequestService {
         if (!"APPROVED".equals(r.getStatus()) || r.getHandoverStatus() == null || r.getHandoverStatus().isBlank()) {
             throw new BizException("该申请不在待交接状态");
         }
+        r.setApplicantId(assetService.resolveApplicant(r.getApplicantId(), r.getApplicant()).getId());
         if ("RETURN".equals(r.getHandoverStatus())) {
             Asset a = lockOne(r.getAssetNo());
-            assetService.assertAllowed(a, r.getType(), r.getApplicant());
+            assetService.assertAllowed(a, r.getType(), r.getApplicantId());
             if ("REPLACE".equals(r.getType())) {
                 doReplaceRecycle(a, r, u.name());
                 r.setHandoverStatus("PICKUP");
                 r.setHandoverBy(u.name());
                 r.setHandoverAt(LocalDateTime.now());
                 requestMapper.update(r);
-                notifyService.send(r.getApplicant(), "旧设备已回收，待领取新设备",
+                notifyService.send(r.getApplicantId(), r.getApplicant(), "旧设备已回收，待领取新设备",
                         r.getNo() + " 原设备 " + a.getNo() + " 已回库，请到 IT 服务台领取新设备 "
                                 + (r.getNewAssetNo() == null ? "" : r.getNewAssetNo()) + "。", "ASSET", r.getNo());
                 audit.record("ASSET_HANDOVER", r.getNo(), "回收旧机 " + a.getNo() + "，转入待领取，操作人=" + u.name());
@@ -216,11 +217,11 @@ public class AssetRequestService {
                 doReplaceAssign(na, r, u.name());
             } else if ("RECEIVE".equals(r.getType())) {
                 Asset a = lockOne(r.getAssetNo());
-                assetService.assertAllowed(a, r.getType(), r.getApplicant());
+                assetService.assertAllowed(a, r.getType(), r.getApplicantId());
                 doReceive(a, r, u.name());
             } else if ("BORROW".equals(r.getType())) {
                 Asset a = lockOne(r.getAssetNo());
-                assetService.assertAllowed(a, r.getType(), r.getApplicant());
+                assetService.assertAllowed(a, r.getType(), r.getApplicantId());
                 doBorrow(a, r, u.name());
             } else {
                 throw new BizException("该申请不需要领取确认");
@@ -281,9 +282,7 @@ public class AssetRequestService {
     private void checkNewAsset(AssetRequest r, Asset na, ApproveReq req) {
         if (req != null && req.getNewAssetCategory() != null && !req.getNewAssetCategory().equals(na.getCategory()))
             throw new BizException(409, "替换设备分类已变化，请重新选择");
-        boolean idle = "闲置".equals(na.getStatus())
-                && (na.getUserName() == null || na.getUserName().isBlank())
-                && (na.getBorrower() == null || na.getBorrower().isBlank());
+        boolean idle = "闲置".equals(na.getStatus()) && !na.hasUser() && !na.hasBorrower();
         if (!idle) throw new BizException("替换设备必须处于闲置状态");
     }
 
@@ -302,33 +301,35 @@ public class AssetRequestService {
     }
 
     private void doReceive(Asset a, AssetRequest r, String operator) {
-        a.setUserName(r.getApplicant());
+        a.assignUser(r.getApplicantId(), r.getApplicant());
         a.setStatus("在用");
-        a.setBorrower("");
+        a.assignBorrower(null, "");
         assetMapper.update(a);
         assetService.addHistory(a.getNo(), "领用", "领用给 " + r.getApplicant() + "（" + r.getNo() + "）", operator);
     }
 
     private void doBorrow(Asset a, AssetRequest r, String operator) {
         a.setStatus("借出中");
-        a.setBorrower(r.getApplicant());
+        a.assignBorrower(r.getApplicantId(), r.getApplicant());
         a.setBorrowDue(r.getExpectReturn());
+        a.setBorrowSoonRemindedAt(null);
+        a.setBorrowOverdueRemindedAt(null);
         assetMapper.update(a);
         assetService.addHistory(a.getNo(), "借用",
                 "借出给 " + r.getApplicant() + "，约定归还 " + r.getExpectReturn() + "（" + r.getNo() + "）", operator);
     }
 
     private void doReturn(Asset a, AssetRequest r, String operator) {
-        boolean borrowed = a.getBorrower() != null && !a.getBorrower().isBlank();
+        boolean borrowed = a.hasBorrower();
         if (borrowed) {
             // 归还借用设备：清借用人，设备回到原使用人手里（无人使用则回库）
-            a.setBorrower("");
+            a.assignBorrower(null, "");
             a.setBorrowDue(null);
-            a.setStatus(a.getUserName() == null || a.getUserName().isBlank() ? "闲置" : "在用");
+            a.setStatus(a.hasUser() ? "在用" : "闲置");
         } else {
             // 归还本人领用的设备：解除使用人并回库
-            a.setUserName("");
-            a.setBorrower("");
+            a.assignUser(null, "");
+            a.assignBorrower(null, "");
             a.setBorrowDue(null);
             a.setStatus("闲置");
         }
@@ -337,8 +338,8 @@ public class AssetRequestService {
     }
 
     private void doReplaceRecycle(Asset a, AssetRequest r, String operator) {
-        a.setUserName("");
-        a.setBorrower("");
+        a.assignUser(null, "");
+        a.assignBorrower(null, "");
         a.setBorrowDue(null);
         a.setStatus("闲置");
         assetMapper.update(a);
@@ -347,9 +348,9 @@ public class AssetRequestService {
     }
 
     private void doReplaceAssign(Asset na, AssetRequest r, String operator) {
-        na.setUserName(r.getApplicant());
+        na.assignUser(r.getApplicantId(), r.getApplicant());
         na.setStatus("在用");
-        na.setBorrower("");
+        na.assignBorrower(null, "");
         assetMapper.update(na);
         assetService.addHistory(na.getNo(), "更换",
                 "替换 " + r.getAssetNo() + " 配发给 " + r.getApplicant() + "（" + r.getNo() + "）", operator);
@@ -357,7 +358,7 @@ public class AssetRequestService {
         int moved = ticketMapper.transferAsset(r.getAssetNo(), na.getNo());
         r.setNewAssetNo(na.getNo());
         if (moved > 0) r.setRemark("转移未结工单 " + moved + " 张");
-        notifyService.send(r.getApplicant(), "新设备已配发",
+        notifyService.send(r.getApplicantId(), r.getApplicant(), "新设备已配发",
                 r.getNo() + " 新设备 " + na.getNo() + " 已配发。", "ASSET", r.getNo());
     }
 
@@ -370,7 +371,7 @@ public class AssetRequestService {
         if (req != null && req.getRemark() != null && !req.getRemark().isBlank()) r.setRemark(req.getRemark());
         requestMapper.update(r);
         if (!"REPLACE".equals(r.getType())) {
-            notifyService.send(r.getApplicant(), "申请已完成",
+            notifyService.send(r.getApplicantId(), r.getApplicant(), "申请已完成",
                     r.getNo() + " " + TYPE_NAME.get(r.getType()) + " 已办理完成。", "ASSET", r.getNo());
         }
         audit.record("ASSET_APPROVE", r.getNo(), r.getType() + "；资产=" + r.getAssetNo()
@@ -379,7 +380,7 @@ public class AssetRequestService {
 
     private void notifyHandoverNeeded(AssetRequest r) {
         boolean ret = "RETURN".equals(r.getHandoverStatus());
-        notifyService.send(r.getApplicant(),
+        notifyService.send(r.getApplicantId(), r.getApplicant(),
                 ret ? "审批已通过，待归还设备" : "审批已通过，待领取设备",
                 r.getNo() + " " + TYPE_NAME.get(r.getType())
                         + (ret ? " 已通过，请把设备交到 IT 服务台/备件库，IT 确认后完成。"
@@ -417,7 +418,7 @@ public class AssetRequestService {
         r.setHandledAt(LocalDateTime.now());
         r.setRemark(reason);
         requestMapper.update(r);
-        notifyService.send(r.getApplicant(), "申请被驳回",
+        notifyService.send(r.getApplicantId(), r.getApplicant(), "申请被驳回",
                 r.getNo() + " 驳回原因：" + reason, "ASSET", r.getNo());
         audit.record("ASSET_REJECT",r.getNo(),reason==null?"":reason);
         return requestMapper.findById(r.getId());

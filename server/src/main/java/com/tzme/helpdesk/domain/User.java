@@ -3,6 +3,7 @@ package com.tzme.helpdesk.domain;
 import lombok.Data;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Data
 public class User {
@@ -18,6 +19,10 @@ public class User {
     private String skill;
     private String location;
     private String status;
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private String badgeAvatar;
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+    private List<List<String>> namePinyin;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

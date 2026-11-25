@@ -30,7 +30,7 @@ const purchaseFlow = ref<InstanceType<typeof PurchaseFlow>>()
 const active = computed(() => tickets.value.filter((t) => !['CLOSED', 'REJECTED', 'CANCELLED'].includes(t.status)))
 const pending = computed(() => tickets.value.filter((t) => t.status === 'PENDING_CONFIRM'))
 const hero = computed(() => pending.value[0] || active.value[0])
-const myName = computed(() => auth.user?.name || '')
+const myId = computed(() => auth.user?.id)
 /** 本人待审批申请涉及的设备，四个入口里不再可选 */
 const pendingNos = computed(() => myRequests.value
   .filter((r) => r.status !== 'COMPLETED' && r.status !== 'REJECTED' && r.status !== 'CANCELLED')
@@ -41,7 +41,7 @@ const quick = computed(() => (['RECEIVE', 'BORROW', 'REPLACE', 'RETURN'] as cons
   type,
   label: REQ_TYPE[type].name.replace('资产', ''),
   desc: REQ_TYPE[type].desc,
-  count: eligibleAssets(assets.value, type, myName.value, '', pendingNos.value).length
+  count: eligibleAssets(assets.value, type, myId.value, '', pendingNos.value).length
 })))
 
 async function loadRequests() {
@@ -139,8 +139,8 @@ async function doScan() {
         <div class="t">{{ hero.title }}</div>
         <div class="d">
           <span v-if="hero.assigneeName">工程师 {{ hero.assigneeName }} · </span>
-          <span v-if="hero.overdue" style="color: #ffd8d0">{{ remainText(hero.remainMinutes) }}</span>
-          <span v-else>{{ remainText(hero.remainMinutes) || hero.priority }}</span>
+          <span v-if="hero.overdue" style="color: #ffd8d0">{{ remainText(hero.remainMinutes, hero.workTime) }}</span>
+          <span v-else>{{ remainText(hero.remainMinutes, hero.workTime, hero.slaPausedAt) || hero.priority }}</span>
         </div>
         <div class="f"><span class="mono">{{ hero.no }}</span><b>查看进度 ›</b></div>
         <div v-if="ticketQueueText(hero)" class="hero-queue">{{ ticketQueueText(hero) }}</div>
@@ -151,7 +151,9 @@ async function doScan() {
       </div>
 
       <div class="entries">
-        <div v-if="auth.can('ticket.create')" class="entry span-all" @click="router.push('/new')">
+        <div v-if="auth.can('ticket.create')" class="entry span-all" data-workflow-step="repair-entry" role="button" tabindex="0"
+          @click="router.push('/new')" @keydown.enter.prevent="($event.currentTarget as HTMLElement).click()"
+          @keydown.space.prevent="($event.currentTarget as HTMLElement).click()">
           <div class="ic">＋</div>
           <div class="lt">
             <div class="l">报修</div>

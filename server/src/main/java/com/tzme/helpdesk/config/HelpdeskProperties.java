@@ -1,5 +1,6 @@
 package com.tzme.helpdesk.config;
 
+import com.tzme.helpdesk.dto.JobSettings;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
@@ -24,6 +25,7 @@ public class HelpdeskProperties {
     @Data
     public static class DingTalk {
         private boolean enabled = false;
+        private String syncCron = JobSettings.DEFAULT_CONTACT_CRON;
         /**
          * 仅本地联调用：钉钉接口照常走真实环境，但登录仍可用演示账号切换。
          * 生产环境必须保持 false，否则任何人可以用姓名登录。

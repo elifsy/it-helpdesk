@@ -88,10 +88,10 @@ public class PurchaseService {
 
     /* ------------------------------ 申请单 ------------------------------ */
 
-    public List<PurchaseRequest> list(String status, Boolean mine) {
+    public List<PurchaseRequest> list(String status, Boolean mine, String no) {
         LoginUser u = CurrentUser.require();
         boolean mineFlag = Boolean.TRUE.equals(mine) || u.isEmployeeOnly();
-        List<PurchaseRequest> rows = requestMapper.list(status, u.name(), mineFlag);
+        List<PurchaseRequest> rows = requestMapper.list(status, u.name(), u.id(), mineFlag, no);
         if (!com.tzme.helpdesk.security.Roles.isItOrAdmin(u.role())) rows.forEach(row -> row.setPendingReportCount(null));
         for (PurchaseRequest r : rows) attachItems(r);
         return rows;
@@ -189,12 +189,12 @@ public class PurchaseService {
         }
 
         if (dingApproval.tryStart(r)) {
-            notifyService.send(u.name(), "购入申请已提交",
+            notifyService.send(u.id(), u.name(), "购入申请已提交",
                     r.getNo() + " 共 " + total + " 台设备已提交，已进入钉钉审批，结果会自动同步。", "PURCHASE", r.getNo());
         } else {
-            notifyService.notifyPermission("request.approve", "有新的设备购入申请",
+            notifyService.notifyPermission("request.approve", NotifyService.NEW_PURCHASE,
                     r.getNo() + " 共 " + total + " 台（" + u.name() + "）待审批", "PURCHASE", r.getNo());
-            notifyService.send(u.name(), "购入申请已提交",
+            notifyService.send(u.id(), u.name(), "购入申请已提交",
                     r.getNo() + " 共 " + total + " 台设备已提交，等待审批。", "PURCHASE", r.getNo());
         }
         return detail(r.getId());
@@ -222,7 +222,7 @@ public class PurchaseService {
         if (remark != null && !remark.isBlank()) r.setRemark(remark.trim());
         requestMapper.update(r);
         int total = itemMapper.countByRequest(r.getId());
-        notifyService.send(r.getApplicant(), "购入申请已批准",
+        notifyService.send(r.getApplicantId(), r.getApplicant(), "购入申请已批准",
                 r.getNo() + " 已批准（共 " + total + " 台），IT 会逐项安排库存配发或采购。", "PURCHASE", r.getNo());
         audit.record("PURCHASE_APPROVE", r.getNo(), "明细 " + total + " 台；操作人=" + operator);
         return withItems(requireRequest(r.getId()));
@@ -249,7 +249,7 @@ public class PurchaseService {
         r.setHandledAt(LocalDateTime.now());
         r.setRemark(reason == null || reason.isBlank() ? "审批未通过" : reason.trim());
         requestMapper.update(r);
-        notifyService.send(r.getApplicant(), "购入申请被驳回",
+        notifyService.send(r.getApplicantId(), r.getApplicant(), "购入申请被驳回",
                 r.getNo() + " 驳回原因：" + r.getRemark(), "PURCHASE", r.getNo());
         audit.record("PURCHASE_REJECT", r.getNo(), r.getRemark() + "；操作人=" + operator);
         return withItems(requireRequest(r.getId()));
@@ -275,7 +275,7 @@ public class PurchaseService {
         item.setAssetNo(a.getNo());
         item.setStatus("PENDING_PICKUP");
         itemMapper.update(item);
-        notifyService.send(r.getApplicant(), "设备已就绪，待领取",
+        notifyService.send(r.getApplicantId(), r.getApplicant(), "设备已就绪，待领取",
                 r.getNo() + " 的「" + item.getItemName() + "」已配好（" + a.getNo() + "），请到 IT 服务台领取。", "PURCHASE", r.getNo());
         audit.record("PURCHASE_ITEM_ASSIGN", r.getNo(),
                 item.getItemName() + " → " + a.getNo() + "（库存配发）；操作人=" + CurrentUser.require().name());
@@ -295,7 +295,7 @@ public class PurchaseService {
         item.setOrderedAt(LocalDateTime.now());
         item.setStatus("ORDERED");
         itemMapper.update(item);
-        notifyService.send(r.getApplicant(), "已进入采购流程",
+        notifyService.send(r.getApplicantId(), r.getApplicant(), "已进入采购流程",
                 r.getNo() + " 的「" + item.getItemName() + "」已提交采购（ERP：" + item.getErpNo() + "）。", "PURCHASE", r.getNo());
         audit.record("PURCHASE_ITEM_ORDER", r.getNo(), item.getItemName() + "；ERP=" + item.getErpNo());
         return detail(requestId);
@@ -320,10 +320,14 @@ public class PurchaseService {
         if (a == null) throw new BizException(404, "资产不存在：" + item.getAssetNo());
         if (!"闲置".equals(a.getStatus()) && !"待入库".equals(a.getStatus()))
             throw new BizException("该设备已被占用，无法交付：" + a.getStatus());
+        if (a.hasUser() || a.hasBorrower()) throw new BizException(409, "该设备已分配人员，无法交付");
 
         String operator = CurrentUser.require().name();
-        a.setUserName(r.getApplicant());
-        a.setBorrower("");
+        boolean legacyApplicant = r.getApplicantId() == null;
+        var holder = assetService.resolveApplicant(r.getApplicantId(), r.getApplicant());
+        r.setApplicantId(holder.getId());
+        a.assignUser(holder.getId(), holder.getName());
+        a.assignBorrower(null, "");
         a.setStatus("在用");
         assetMapper.update(a);
         assetService.addHistory(a.getNo(), "领用",
@@ -340,14 +344,14 @@ public class PurchaseService {
         if (allDone) {
             r.setStatus("COMPLETED");
             r.setHandledAt(LocalDateTime.now());
-            requestMapper.update(r);
-            notifyService.send(r.getApplicant(), "购入申请已完成",
+            notifyService.send(r.getApplicantId(), r.getApplicant(), "购入申请已完成",
                     r.getNo() + " 全部 " + total + " 台设备已交付完成。", "PURCHASE", r.getNo());
         } else {
-            notifyService.send(r.getApplicant(), "设备已领取",
+            notifyService.send(r.getApplicantId(), r.getApplicant(), "设备已领取",
                     r.getNo() + " 的「" + item.getItemName() + "」已交付（" + a.getNo() + "），剩余 "
                             + (total - done) + " 台。", "PURCHASE", r.getNo());
         }
+        if (allDone || legacyApplicant) requestMapper.update(r);
         audit.record("PURCHASE_ITEM_DELIVER", r.getNo(),
                 item.getItemName() + " → " + a.getNo() + "；进度 " + done + "/" + total);
         return detail(requestId);
@@ -398,8 +402,7 @@ public class PurchaseService {
         Asset a = assetMapper.findByNoForUpdate(assetNo);
         if (a == null) throw new BizException(404, "资产不存在：" + assetNo);
         boolean idle = "闲置".equals(a.getStatus()) || "待入库".equals(a.getStatus());
-        boolean free = (a.getUserName() == null || a.getUserName().isBlank())
-                && (a.getBorrower() == null || a.getBorrower().isBlank());
+        boolean free = !a.hasUser() && !a.hasBorrower();
         if (!idle || !free) throw new BizException("只能选择闲置或待入库、且无人使用的设备");
         return a;
     }

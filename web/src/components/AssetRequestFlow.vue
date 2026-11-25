@@ -6,10 +6,12 @@
 import { computed, nextTick, onUnmounted, reactive, ref, watch } from 'vue'
 import { assetRequestApi } from '../api'
 import { useAuthStore } from '../stores/auth'
-import { eligibleAssets } from '../utils/assets'
+import { eligibleAssets, hasAssetHolder } from '../utils/assets'
 import { REQ_TYPE } from '../utils/dict'
 import { toast } from '../utils/toast'
 import AssetPicker from './AssetPicker.vue'
+import { practiceAssets, practiceCategories } from '../config/workflows'
+import { tutorialWorkflow } from '../utils/tutorialPractice'
 
 const props = defineProps<{
   assets: any[]
@@ -23,7 +25,12 @@ const props = defineProps<{
 const emit = defineEmits<{ submitted: [no: string]; closed: [] }>()
 
 const auth = useAuthStore()
-const myName = computed(() => auth.user?.name || '')
+const myId = computed(() => auth.user?.id)
+const isExample = !!tutorialWorkflow.value && tutorialWorkflow.value !== 'repair'
+const flowAssets = computed(() => isExample ? practiceAssets(auth.user?.name || '', myId.value) : props.assets)
+const flowCategories = computed(() => isExample ? practiceCategories : props.categories)
+const flowLoading = computed(() => !isExample && !!props.loading)
+const flowPending = computed(() => isExample ? [] : props.pendingNos || [])
 
 const pickType = ref('')
 const pickCategory = ref('')
@@ -38,13 +45,13 @@ const form = reactive({ reason: '', expectReturn: '' })
 const spareNo = ref('')
 const spareCategory = ref('')
 const showSpare = ref(false)
-const spareAssets = computed(() => props.assets.filter(a =>
-  ['闲置', '待入库'].includes(a.status) && !a.userName && !a.borrower && a.no !== pickNo.value))
-const spareSelected = computed(() => props.assets.find(a => a.no === spareNo.value))
+const spareAssets = computed(() => flowAssets.value.filter(a =>
+  ['闲置', '待入库'].includes(a.status) && !hasAssetHolder(a) && a.no !== pickNo.value))
+const spareSelected = computed(() => flowAssets.value.find(a => a.no === spareNo.value))
 
-const pickAssets = computed(() => eligibleAssets(props.assets, pickType.value, myName.value, '', props.pendingNos || []))
-const pickList = computed(() => eligibleAssets(props.assets, pickType.value, myName.value, pickCategory.value, props.pendingNos || []))
-const selectedAsset = computed(() => props.assets.find(a => a.no === pickNo.value))
+const pickAssets = computed(() => eligibleAssets(flowAssets.value, pickType.value, myId.value, '', flowPending.value))
+const pickList = computed(() => eligibleAssets(flowAssets.value, pickType.value, myId.value, pickCategory.value, flowPending.value))
+const selectedAsset = computed(() => flowAssets.value.find(a => a.no === pickNo.value))
 
 watch(pickList, list => { if (!list.some(a => a.no === pickNo.value)) pickNo.value = '' })
 watch(showPick, async open => {
@@ -63,14 +70,14 @@ onUnmounted(() => { if (pickerOverflow !== null) document.body.style.overflow = 
 /** 打开申请流程；no 为已选设备编号（可空） */
 function open(type: string, no?: string) {
   if (!auth.can('request.create') || !['RECEIVE', 'BORROW', 'REPLACE', 'RETURN'].includes(type)) return
-  if (no && (props.pendingNos || []).includes(no)) {
+  if (no && flowPending.value.includes(no)) {
     toast('该设备你已提交过申请，审批完成前不能重复提交')
     return
   }
-  const asset = props.assets.find(a => a.no === no)
+  const asset = flowAssets.value.find(a => a.no === no)
   pickType.value = type
   pickCategory.value = asset?.category || ''
-  const list = eligibleAssets(props.assets, type, myName.value, pickCategory.value)
+  const list = eligibleAssets(flowAssets.value, type, myId.value, pickCategory.value)
   pickNo.value = list.some(a => a.no === no) ? no! : ''
   form.reason = ''
   form.expectReturn = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10)
@@ -149,9 +156,9 @@ defineExpose({ open, close: closeFlow })
           v-model="pickNo"
           v-model:category="pickCategory"
           :assets="pickAssets"
-          :categories="categories"
-          :loading="!!loading"
-          :my-name="myName"
+          :categories="flowCategories"
+          :loading="flowLoading"
+          :my-id="myId"
           :category-label="pickType === 'REPLACE' ? '原设备分类' : '资产分类'"
           :empty-text="'该分类下暂无可' + (pickType === 'RECEIVE' ? '领用' : pickType === 'BORROW' ? '借用' : pickType === 'REPLACE' ? '更换的本人' : '归还的本人') + '设备，可切换其他分类查看。'"
         />
@@ -164,7 +171,7 @@ defineExpose({ open, close: closeFlow })
         </div>
         <div class="picker-footer-actions">
           <button class="btn" @click="closeFlow">取消</button>
-          <button class="btn pri" :disabled="loading || !pickNo || !pickList.length" @click="nextStep">下一步</button>
+          <button class="btn pri" data-workflow-step="asset-next" :disabled="flowLoading || !pickNo || !pickList.length" @click="nextStep">下一步</button>
         </div>
       </div>
     </div>
@@ -182,7 +189,7 @@ defineExpose({ open, close: closeFlow })
       </div>
       <div class="asset-selection-body">
         <AssetPicker v-model="spareNo" v-model:category="spareCategory" :assets="spareAssets"
-          :categories="categories" :loading="!!loading" category-label="替换设备分类"
+          :categories="flowCategories" :loading="flowLoading" category-label="替换设备分类"
           empty-text="当前没有闲置可替换的设备，请先归还或新增备机。" />
       </div>
       <div class="dlg-f asset-selection-footer">
@@ -192,14 +199,14 @@ defineExpose({ open, close: closeFlow })
         </div>
         <div class="picker-footer-actions">
           <button class="btn" @click="showSpare = false">取消</button>
-          <button class="btn pri" :disabled="!spareNo" @click="showSpare = false">确定</button>
+          <button class="btn pri" data-workflow-step="asset-spare-confirm" :disabled="!spareNo" @click="showSpare = false">确定</button>
         </div>
       </div>
     </div>
   </div>
 
   <!-- 申请表单 -->
-  <div v-if="showApply" class="mask" @click.self="closeFlow">
+  <div v-if="showApply" v-show="!showSpare" class="mask" @click.self="closeFlow">
     <div class="dlg">
       <div class="dlg-h">{{ REQ_TYPE[pickType].name }} · 填写申请<span class="x" @click="closeFlow">×</span></div>
       <div class="dlg-b">
@@ -211,16 +218,16 @@ defineExpose({ open, close: closeFlow })
         </div>
         <div class="fld">
           <label class="lb">申请事由<i>*</i></label>
-          <textarea v-model="form.reason" class="ta" placeholder="例：新岗位需要一台办公笔记本，申请领用。" />
+          <textarea v-model="form.reason" class="ta" data-workflow-step="asset-reason" aria-label="申请事由" placeholder="例：新岗位需要一台办公笔记本，申请领用。" />
         </div>
         <div v-if="pickType === 'BORROW'" class="fld" style="margin-bottom: 0">
           <label class="lb">预计归还日期<i>*</i></label>
-          <input v-model="form.expectReturn" type="date" class="inp" />
+          <input v-model="form.expectReturn" type="date" data-workflow-step="asset-date" aria-label="预计归还日期" class="inp" />
         </div>
         <div v-if="pickType === 'REPLACE'" class="fld" style="margin-bottom: 0">
           <label class="lb">替换设备<i>*</i></label>
           <div class="row" style="gap:8px;align-items:center">
-            <button type="button" class="btn" style="flex:1;justify-content:flex-start" @click="showSpare = true">
+            <button type="button" class="btn" data-workflow-step="asset-spare-open" style="flex:1;justify-content:flex-start" @click="showSpare = true">
               {{ spareSelected ? spareSelected.name + ' · ' + spareNo : '选择一台闲置设备作为替换机' }}
             </button>
             <button v-if="spareNo" type="button" class="btn sm" @click="spareNo = ''">清除</button>
@@ -230,7 +237,7 @@ defineExpose({ open, close: closeFlow })
       </div>
       <div class="dlg-f">
         <button class="btn" :disabled="submitting" @click="closeFlow">取消</button>
-        <button class="btn pri" :disabled="submitting || !pickNo || !auth.can('request.create')" @click="submitApply">{{ submitting ? '提交中…' : '提交申请' }}</button>
+        <button class="btn pri" data-workflow-step="asset-submit" :disabled="submitting || !pickNo || !auth.can('request.create')" @click="submitApply">{{ submitting ? '提交中…' : '提交申请' }}</button>
       </div>
     </div>
   </div>

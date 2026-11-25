@@ -19,12 +19,12 @@ public class KbService {
         return kbMapper.list(keyword, category);
     }
 
-    public KbArticle detail(Long id) {
+    public KbArticle detail(Long id, boolean countView) {
         KbArticle a = kbMapper.findById(id);
         if (a == null || !"PUBLISHED".equals(a.getStatus())) {
             throw new BizException(404, "知识条目不存在");
         }
-        kbMapper.incViews(id);
+        if (countView) kbMapper.incViews(id);
         a.setSourceTicketNo(null);
         return a;
     }

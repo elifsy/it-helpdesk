@@ -7,6 +7,8 @@ import { useAuthStore } from '../../stores/auth'
 import { ASSET_STATUS_CLASS } from '../../utils/dict'
 import { toast } from '../../utils/toast'
 import AssetFormFields from '../../components/AssetFormFields.vue'
+import PersonPicker from '../../components/PersonPicker.vue'
+import type { PersonOption } from '../../utils/people-search'
 import DeviceIcon from '../../components/DeviceIcon.vue'
 import { autoIconKey, iconClass, iconLabel } from '../../utils/deviceIcons'
 
@@ -22,6 +24,10 @@ const saving = ref(false)
 const showEdit = ref(false)
 const editError = ref('')
 const showCategory = ref(false)
+const showHolders = ref(false)
+const holderError = ref('')
+const selectedUser = ref<PersonOption>()
+const selectedBorrower = ref<PersonOption>()
 const categoryError = ref('')
 const targetCategory = ref('')
 const showQr = ref(false)
@@ -35,6 +41,8 @@ const form = reactive({
 })
 let loadVersion = 0
 const canEdit = computed(() => auth.can('asset.create'))
+const unresolvedUser = computed(() => !!asset.value?.userName?.trim() && asset.value.userId == null)
+const unresolvedBorrower = computed(() => !!asset.value?.borrower?.trim() && asset.value.borrowerId == null)
 const backQuery = computed(() => ({
   ...(route.query.backPage ? { page: String(route.query.backPage) } : {}),
   ...(route.query.backCategory ? { category: String(route.query.backCategory) } : {}),
@@ -64,10 +72,11 @@ async function load() {
 }
 watch(() => route.params.no, () => {
   detail.value = null; showEdit.value = false; showCategory.value = false; showQr.value = false
+  showHolders.value = false
   void load()
 }, { immediate: true })
 watch(() => route.query.edit, edit => { if (edit === '1' && asset.value && canEdit.value) openEdit() })
-watch(canEdit, allowed => { if (!allowed) { showEdit.value = false; showCategory.value = false; clearEditQuery() } })
+watch(canEdit, allowed => { if (!allowed) { showEdit.value = false; showCategory.value = false; showHolders.value = false; clearEditQuery() } })
 onUnmounted(() => { loadVersion++ })
 function openEdit() {
   if (!asset.value || !canEdit.value || saving.value) return
@@ -82,6 +91,31 @@ function openEdit() {
   showEdit.value = true
 }
 function closeEdit() { if (!saving.value) { showEdit.value = false; clearEditQuery() } }
+function openHolders() {
+  if (!canEdit.value || saving.value) return
+  holderError.value = ''
+  selectedUser.value = undefined
+  selectedBorrower.value = undefined
+  showHolders.value = true
+}
+async function saveHolders() {
+  if (!canEdit.value || saving.value || (!selectedUser.value && !selectedBorrower.value)) return
+  const no = asset.value.no
+  saving.value = true
+  holderError.value = ''
+  try {
+    const updated = await assetApi.bindHolders(no, {
+      editToken: detail.value.editToken,
+      userId: selectedUser.value?.id,
+      borrowerId: selectedBorrower.value?.id
+    })
+    if (String(route.params.no) !== no) return
+    detail.value = updated
+    showHolders.value = false
+    toast('资产归属已确认')
+  } catch (e: any) { holderError.value = e.message }
+  finally { saving.value = false }
+}
 async function reloadEditor() {
   if (!window.confirm('重新加载会放弃当前未保存的修改，确认继续？')) return
   showEdit.value = false
@@ -186,13 +220,13 @@ function downloadQr() {
         <section class="panel">
           <div class="section-heading"><h3>使用与借用</h3><span class="pill" :class="ASSET_STATUS_CLASS[asset.status] || 'b-gray'">{{ asset.status }}</span></div>
           <dl class="usage">
-            <div><dt>使用人</dt><dd>{{ asset.userName || '公用 / 未分配' }}</dd></div>
-            <div><dt>借用人</dt><dd>{{ asset.borrower || '未借出' }}</dd></div>
+            <div><dt>使用人</dt><dd>{{ asset.userName || '公用 / 未分配' }} <span v-if="unresolvedUser" class="small muted">待确认</span></dd></div>
+            <div><dt>借用人</dt><dd>{{ asset.borrower || '未借出' }} <span v-if="unresolvedBorrower" class="small muted">待确认</span></dd></div>
             <div><dt>预计归还</dt><dd>{{ asset.borrowDue || '—' }}</dd></div>
             <div><dt>建档时间</dt><dd>{{ asset.createdAt || '—' }}</dd></div>
             <div><dt>最近更新</dt><dd>{{ asset.updatedAt || '—' }}</dd></div>
           </dl>
-          <p class="hint">使用人、借用人和借用状态由资产申请流程维护。</p>
+          <button v-if="canEdit && (unresolvedUser || unresolvedBorrower)" type="button" class="btn sm" @click="openHolders">确认资产归属</button>
         </section>
       </div>
       <section class="panel history-panel">
@@ -203,6 +237,24 @@ function downloadQr() {
         </ol>
       </section>
     </template>
+
+    <div v-if="showHolders && asset" class="mask" @click.self="!saving && (showHolders = false)">
+      <form class="dlg" @submit.prevent="saveHolders">
+        <div class="dlg-h">确认资产归属<button class="close-btn" type="button" aria-label="关闭归属确认" :disabled="saving" @click="showHolders = false">×</button></div>
+        <div class="dlg-b">
+          <p class="hint">请按部门或工号核对旧台账姓名对应的人员账号。</p>
+          <p v-if="holderError" class="error-box" role="alert">{{ holderError }}</p>
+          <PersonPicker v-if="unresolvedUser" label="使用人" :manual-name="asset.userName" :search="assetApi.people"
+            :selected="selectedUser" :disabled="saving" @select="selectedUser = $event" @clear="selectedUser = undefined" />
+          <PersonPicker v-if="unresolvedBorrower" label="借用人" :manual-name="asset.borrower" :search="assetApi.people"
+            :selected="selectedBorrower" :disabled="saving" @select="selectedBorrower = $event" @clear="selectedBorrower = undefined" />
+        </div>
+        <div class="dlg-f">
+          <button class="btn" type="button" :disabled="saving" @click="showHolders = false">取消</button>
+          <button class="btn pri" :disabled="saving || (!selectedUser && !selectedBorrower)">保存归属</button>
+        </div>
+      </form>
+    </div>
 
     <div v-if="showEdit && asset" class="mask" @click.self="closeEdit">
       <form class="dlg edit-dialog" @submit.prevent="saveEdit">

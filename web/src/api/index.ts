@@ -1,6 +1,7 @@
 import http from './http'
 import { assetQrContent } from '../utils/asset-links'
 import type { TicketCategoriesByType } from '../config/ticket-types'
+import type { PersonOption } from '../utils/people-search'
 
 export interface TicketNotificationRule {
   type: string
@@ -15,12 +16,10 @@ export interface IncomingNotificationRules {
   assetRecipients: Record<string, number[]>
 }
 
-export interface NotificationRecipient {
-  id: number
-  name: string
+export interface NotificationRecipient extends PersonOption {
   department: string | null
   employeeNo: string | null
-  role: 'IT' | 'ADMIN'
+  role: 'IT' | 'ADMIN' | 'SUPER_ADMIN'
 }
 
 export interface IncomingNotificationConfig {
@@ -60,14 +59,14 @@ export interface MissingReport {
   ticketNo?: string
   cancelReason?: string
 }
-export interface MissingReportRequester { id: number; name: string; department?: string; employeeNo?: string }
+export type MissingReportRequester = PersonOption
 
 export const missingReportApi = {
   summary: () => http.get<any, MissingReportSummary>('/missing-reports/summary'),
   mine: () => http.get<any, MissingReport[]>('/missing-reports/mine'),
   list: (page: number) => http.get<any, { list: MissingReport[]; total: number; size: number }>('/missing-reports', { params: { page } }),
   search: (keyword: string) => http.get<any, MissingReportRequester[]>('/missing-reports/requesters', { params: { keyword } }),
-  detail: (no: string) => http.get<any, { report: MissingReport; evidence: { id: number; storedName: string; fileName: string; contentType: string }[] }>(`/missing-reports/${encodeURIComponent(no)}`),
+  detail: (no: string) => http.get<any, { report: MissingReport; evidence: { id: number; storedName: string; fileName: string; contentType?: string | null }[] }>(`/missing-reports/${encodeURIComponent(no)}`),
   register: (report: { requesterId: number; title: string; description: string; channel: string; completedAt: string }, evidence: File) => {
     const form = new FormData()
     form.append('report', new Blob([JSON.stringify(report)], { type: 'application/json' }), 'report.json')
@@ -86,6 +85,28 @@ export const authApi = {
     http.post<any, LoginResult>('/auth/login', payload)
 }
 
+export const tutorialApi = {
+  seen: () => http.get<any, string[]>('/tutorials'),
+  start: (module: string) => http.post<any, { shouldStart: boolean }>(`/tutorials/${encodeURIComponent(module)}/start`)
+}
+
+export type BadgeAvatarSource = 'DINGTALK' | 'VIRTUAL'
+export interface AccountBadge {
+  avatarSource: BadgeAvatarSource
+  avatarUrl?: string | null
+  acceptedTickets?: number | null
+  titleKey?: 'steel' | 'jade' | 'sapphire' | 'legend' | null
+  title?: string | null
+  nextTitle?: string | null
+  nextTitleAt?: number | null
+}
+export const accountBadgeApi = {
+  get: () => http.get<any, AccountBadge>('/account/badge'),
+  setAvatar: (source: BadgeAvatarSource) => http.put<any, AccountBadge>('/account/badge/avatar', { source }),
+  getTitleSettings: () => http.get<any, { enabled: boolean }>('/account/badge/titles'),
+  setTitlesEnabled: (enabled: boolean) => http.put<any, { enabled: boolean }>('/account/badge/titles', { enabled })
+}
+
 export const ticketApi = {
   list: (params: Record<string, any>) => http.get<any, any>('/tickets', { params }),
   create: (data: any) => http.post<any, any>('/tickets', data),
@@ -95,6 +116,8 @@ export const ticketApi = {
   addRecord: (no: string, data: any) => http.post<any, any>(`/tickets/${no}/records`, data),
   finish: (no: string, data: { cat1: string; cat2?: string; note: string }) =>
     http.post<any, any>(`/tickets/${no}/finish`, data),
+  requestInfo: (no: string, note: string) => http.post<any, any>(`/tickets/${no}/request-info`, { note }),
+  provideInfo: (no: string, note: string) => http.post<any, any>(`/tickets/${no}/provide-info`, { note }),
   confirm: (no: string, data: any) => http.post<any, any>(`/tickets/${no}/confirm`, data),
   rate: (no: string, data: any) => http.post<any, any>(`/tickets/${no}/rate`, data),
   reject: (no: string, reason: string) => http.post<any, any>(`/tickets/${no}/reject`, { reason }),
@@ -103,10 +126,14 @@ export const ticketApi = {
 
 export const assetApi = {
   update: (no: string, data: any) => http.put<any, any>(`/assets/${encodeURIComponent(no)}`, data),
+  people: (keyword: string) => http.get<any, PersonOption[]>('/assets/people', { params: { keyword } }),
+  bindHolders: (no: string, data: { editToken: string; userId?: number; borrowerId?: number }) =>
+    http.put<any, any>(`/assets/${encodeURIComponent(no)}/holders`, data),
   setCategory: (no: string, category: string) => http.put<any, any>(`/assets/${encodeURIComponent(no)}/category`, { category }),
   list: (params: Record<string, any> = {}) => http.get<any, any>('/assets', { params }),
   page: (params: Record<string, any> = {}) => http.get<any, { list: any[]; total: number; page: number; size: number }>('/assets', { params: { page: 1, size: 15, ...params } }),
   detail: (no: string) => http.get<any, any>(`/assets/${encodeURIComponent(no)}`),
+  borrowDue: () => http.get<any, BorrowDueList>('/assets/borrow-due'),
   qrcode: async (no: string) => {
     const result = await http.get<any, any>(`/assets/${encodeURIComponent(no)}/qrcode`)
     return { ...result, content: assetQrContent(no, result.content, window.location.href) }
@@ -119,6 +146,9 @@ export const assetApi = {
     return http.post<any, { imported: number }>('/assets/import', form, { timeout: 60000 })
   }
 }
+
+export interface BorrowDueDevice { no: string; name: string; borrowDue: string }
+export interface BorrowDueList { upcoming: BorrowDueDevice[]; overdue: BorrowDueDevice[]; advanceDays: number }
 
 export interface AssetCategory { id: number; name: string; sort: number; assetCount: number }
 export const assetCategoryApi = {
@@ -188,8 +218,17 @@ export const statsApi = {
   problemAssets: (limit = 5) => http.get<any, any>('/stats/problem-assets', { params: { limit } })
 }
 
+export interface Notification {
+  id: number
+  title: string
+  content: string
+  isRead: number
+  createdAt: string
+  action?: { label: string; path: string } | null
+}
+
 export const notifyApi = {
-  list: () => http.get<any, any>('/notifies'),
+  list: () => http.get<any, Notification[]>('/notifies'),
   unread: () => http.get<any, any>('/notifies/unread-count'),
   read: (id: number) => http.post<any, any>(`/notifies/${id}/read`),
   readAll: () => http.post<any, any>('/notifies/read-all')
@@ -202,7 +241,7 @@ export interface ServiceContact {
   leaveStart?: string
   leaveEnd?: string
 }
-export interface ServiceContactPerson { id: number; name: string; department?: string; employeeNo?: string }
+export type ServiceContactPerson = PersonOption
 export interface ServiceContactRoster { contacts: ServiceContact[]; hotline: string; hotlineNote: string }
 export interface DutySettings {
   members: ServiceContactMember[]
@@ -221,7 +260,7 @@ export const metaApi = {
   categories: () => http.get<any, any>('/meta/categories'),
   categoriesByType: () => http.get<any, import('../config/ticket-types').TicketCategoriesByType>('/meta/categories-by-type'),
   solutionCodes: () => http.get<any, any>('/meta/solution-codes'),
-  engineers: () => http.get<any, any>('/meta/engineers')
+  engineers: () => http.get<any, PersonOption[]>('/meta/engineers')
 }
 
 export const attachmentApi = {
@@ -238,6 +277,33 @@ export const attachmentApi = {
   remove: (id: number) => http.delete<any, any>(`/attachments/${id}`)
 }
 
+export interface JobSettings {
+  revision: number
+  slaScanEnabled: boolean
+  slaCron: string
+  slaReminderHours: number
+  confirmationReminderHours: number
+  contactSyncEnabled: boolean
+  contactCron: string
+}
+interface JobRun {
+  jobKey?: string
+  job_key?: string
+  finishedAt?: string
+  finished_at?: string
+  status: string
+  message: string
+}
+export interface JobStatus {
+  settings: JobSettings
+  runs: JobRun[]
+  dingTalkEnabled: boolean
+  timezone: string
+  slaNextRun?: string
+  contactNextRun?: string
+  borrowDueNextRun?: string
+}
+
 export const adminApi = {
   settings: () => http.get<any, any>('/admin/manage/settings'),
   saveSettings: (data: any) => http.put<any, any>('/admin/manage/settings', data),
@@ -250,7 +316,8 @@ export const adminApi = {
   deleteSolution: (id: number) => http.delete<any, any>(`/admin/manage/solution-codes/${id}`),
   audit: (params: Record<string, any> = {}) => http.get<any, any>('/admin/manage/audit', { params }),
   storage: () => http.get<any, any>('/admin/manage/storage'),
-  jobs: () => http.get<any, any>('/admin/manage/jobs'),
+  jobs: () => http.get<any, JobStatus>('/admin/manage/jobs'),
+  saveJobs: (data: JobSettings) => http.put<any, JobStatus>('/admin/manage/jobs', data),
   permissions: () => http.get<any, any>('/admin/manage/permissions'),
   savePermissions: (data: any) => http.put<any, any>('/admin/manage/permissions', data),
   dictionary: () => http.get<any, any>('/admin/manage/dictionary'),

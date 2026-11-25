@@ -25,6 +25,10 @@ INSERT INTO sys_user (id, ding_user_id, name, employee_no, dept_id, dept_name, m
  (7, 'ding_liuyang',  '刘洋', 'E10318', 3, '生产制造部', '13800000007', 'USER',     NULL,           '厂区 2号车间', 'ACTIVE'),
  (8, 'ding_wangfang','王芳', 'E10509', 4, '质量管理部', '13800000008', 'USER',                 NULL,           'B座 4F', 'ACTIVE');
 
+-- 本地演示身份选择器使用的账号，不绑定钉钉身份。
+INSERT INTO sys_user (name, role) VALUES
+ ('谈帥宏', 'USER'), ('刘宇泽', 'USER'), ('林凤新', 'IT'), ('邵昕炜', 'SUPER_ADMIN');
+
 -- IT 资产
 INSERT INTO it_asset (no, name, category, sn, user_name, location, buy_date, warranty, warranty_end, status, borrower, borrow_due) VALUES
  ('IT-PC-2024-0137', '联想 ThinkPad T14s',      '终端设备', 'PF5T71QA', '张伟',  'B座 3F 工位', '2024-03-12', '厂商保修', '2027-03-12', '在用',   NULL, NULL),

@@ -1,8 +1,8 @@
 export type WorkRole = 'emp' | 'it' | 'admin' | 'viewer'
-export const ROLE_NAMES: Record<string, string> = { USER: '普通用户', IT: 'IT', ADMIN: '管理员', VIEWER: '可查看用户' }
+export const ROLE_NAMES: Record<string, string> = { USER: '普通用户', IT: 'IT', ADMIN: '管理员', VIEWER: '可查看用户', SUPER_ADMIN: '超级管理员' }
 export const CONFIG_PERMISSIONS: Record<string, string[]> = {
   '': ['settings.manage'], users: ['user.manage'], depts: ['dept.manage', 'contact.sync'], matrix: ['role.manage'],
-  duty: ['settings.manage'], sla: ['settings.manage'], dict: ['dict.manage'], audit: ['audit.view'], storage: ['settings.manage'], jobs: ['settings.manage']
+  duty: ['settings.manage'], sla: ['settings.manage'], dict: ['dict.manage'], audit: ['audit.view'], storage: ['settings.manage']
 }
 export interface MenuItem { path: string; icon: string; label: string; badge?: 'pending' | 'approvals'; permission?: string }
 export interface MenuGroup { title: string; items: MenuItem[] }
@@ -14,7 +14,7 @@ export const ROLE_META: Record<WorkRole, RoleMeta> = {
   viewer: { label: '可查看用户', home: '/admin/tickets', initial: '赵', avatar: 'linear-gradient(145deg,#e5e7eb,#cbd5e1)', color: '#475569' }
 }
 export function roleFromRoles(roles: string[] = []): WorkRole {
-  if (roles.includes('ADMIN')) return 'admin'
+  if (roles.includes('ADMIN') || roles.includes('SUPER_ADMIN')) return 'admin'
   if (roles.includes('IT')) return 'it'
   if (roles.includes('VIEWER')) return 'viewer'
   return 'emp'
@@ -24,9 +24,10 @@ export function routeAllowed(roles: string[], fullPath: string, permissions: str
   const has = (...keys: string[]) => keys.some(key => permissions.includes(key))
   if (path === '/home' || path === '/') return true
   if (path === '/missing-reports') return true
-  if (path === '/admin/missing-reports') return roles.includes('IT') || roles.includes('ADMIN')
+  if (path === '/admin/missing-reports') return roles.includes('IT') || roleFromRoles(roles) === 'admin'
   if (path.startsWith('/admin/config')) {
     const tab = new URLSearchParams(query).get('tab') || ''
+    if (tab === 'jobs') return roles.includes('SUPER_ADMIN')
     return !!CONFIG_PERMISSIONS[tab] && has(...CONFIG_PERMISSIONS[tab])
   }
   if (path === '/new') return has('ticket.create')
@@ -42,7 +43,7 @@ export function routeAllowed(roles: string[], fullPath: string, permissions: str
   return false
 }
 export function homeForRoles(roles: string[] = [], permissions: string[] = []): string {
-  const candidates = roles.includes('ADMIN')
+  const candidates = roleFromRoles(roles) === 'admin'
     ? ['/admin/dashboard', '/admin/tickets', '/admin/config', '/admin/config?tab=matrix', '/admin/assets', '/kb']
     : roles.includes('VIEWER')
       ? ['/admin/tickets', '/admin/assets', '/admin/stats', '/kb']
@@ -132,13 +133,10 @@ export function titleFor(role: WorkRole, fullPath: string): string {
   if (fullPath.startsWith('/admin/assets/')) return '设备详情'
   return '服务平台'
 }
-/**
- * 演示登录可切换的账号：必须是库里 ACTIVE 的真实账号，否则点击会报「账号不存在」。
- * 普通成员测试固定用 谈帥宏 / 刘宇泽，其它账号不作为测试身份。
- */
+/** 本地演示账号由演示种子数据提供，权限以服务端返回为准。 */
 export const DEMO_USERS = [
-  { name: '谈帥宏', tag: '普通成员' },
-  { name: '刘宇泽', tag: '普通成员' },
-  { name: '林凤新', tag: 'IT' },
-  { name: '邵昕炜', tag: '管理员' }
+  { name: '谈帥宏', tag: ROLE_NAMES.USER },
+  { name: '刘宇泽', tag: ROLE_NAMES.USER },
+  { name: '林凤新', tag: ROLE_NAMES.IT },
+  { name: '邵昕炜', tag: ROLE_NAMES.SUPER_ADMIN }
 ]

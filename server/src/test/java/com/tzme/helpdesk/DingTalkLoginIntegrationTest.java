@@ -109,6 +109,19 @@ class DingTalkLoginIntegrationTest {
     int users(String id) { return db.queryForObject("select count(*) from sys_user where ding_user_id=?", Integer.class, id); }
     int bootstrapCount() { return db.queryForObject("select count(*) from sys_setting where setting_key='dingtalk-bootstrap-admin'", Integer.class); }
 
+    @Test void badgeUsesVerifiedDingTalkAvatarByDefaultAndCachesTheProfile() throws Exception {
+        String id = "badge-avatar-user";
+        var person = new java.util.HashMap<>(profile(id, "工牌头像员工"));
+        person.put("avatar", "https://static.dingtalk.com/media/badge-avatar.png");
+        token(); code(id); profile(id, person); profile(id, person);
+        String token = data(login()).path("token").asText();
+        for (int i = 0; i < 2; i++) {
+            JsonNode badge = data(mvc.perform(get("/account/badge").header("Authorization", "Bearer " + token)));
+            assertEquals("DINGTALK", badge.path("avatarSource").asText());
+            assertEquals(person.get("avatar"), badge.path("avatarUrl").asText());
+        }
+    }
+
     @Test void firstLoginRegistersVerifiedUserAndCanUseServiceWithoutDirectorySync() throws Exception {
         db.update("update sys_dept set ding_dept_id='9001' where id=2");
         token(); code("real-first"); profile("real-first", profile("real-first", "真实员工"));

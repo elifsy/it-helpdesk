@@ -1,14 +1,18 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, provide, ref } from 'vue'
 import { useAuthStore } from './stores/auth'
 import router from './router'
 import { DEMO_USERS, homeForRoles, routeAllowed } from './config/menus'
 import { authApi } from './api'
 import { navigationFailure, reloadRoute } from './utils/navigation'
+import FeatureTutorial from './components/FeatureTutorial.vue'
+import { openTutorialPicker } from './config/tutorials'
 
 const auth = useAuthStore()
 const ready = ref(false)
 const error = ref('')
+const tutorial = ref<InstanceType<typeof FeatureTutorial>>()
+provide(openTutorialPicker, () => tutorial.value?.openPicker())
 let starting = false
 
 async function start(expired = false) {
@@ -57,6 +61,7 @@ onUnmounted(() => { window.removeEventListener('auth-expired', onExpired); windo
     </div>
   </div>
   <router-view v-else />
+  <FeatureTutorial v-if="ready && auth.user && !auth.roles.includes('SUPER_ADMIN')" ref="tutorial" />
   <div v-if="ready && navigationFailure" class="navigation-error" role="alert">
     <span>{{ navigationFailure.message }}</span>
     <button class="btn sm pri" @click="reloadRoute(navigationFailure.path)">重新打开</button>

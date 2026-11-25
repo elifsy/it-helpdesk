@@ -28,7 +28,7 @@ public final class Permissions {
         cap("attachment.delete","删除业务附件","附件",false),
         cap("user.manage","用户与角色管理","系统管理",false),
         cap("dept.manage","部门管理","系统管理",false),
-        cap("settings.manage","运行配置、SLA、存储与任务","系统管理",false),
+        cap("settings.manage","运行配置、SLA 与存储","系统管理",false),
         cap("dict.manage","分类与解决代码管理","系统管理",false),
         cap("audit.view","查看审计日志","系统管理",true),
         cap("contact.sync","同步通讯录","系统管理",false),
@@ -41,7 +41,7 @@ public final class Permissions {
         return new Capability(key,name,group,readOnly,List.of(requires));
     }
     public static List<String> defaults(String role) {
-        if ("ADMIN".equals(role)) return CATALOG.stream().map(Capability::key).toList();
+        if (Roles.isAdmin(role)) return CATALOG.stream().map(Capability::key).toList();
         List<String> result = new ArrayList<>(SELF_SERVICE);
         if ("VIEWER".equals(role)) result.addAll(List.of("ticket.view.all","request.view.all","stats.view"));
         if ("IT".equals(role)) result.addAll(List.of("ticket.view.all","ticket.accept","ticket.dispatch","ticket.handle","asset.create","request.view.all","request.approve","stats.view","kb.manage"));

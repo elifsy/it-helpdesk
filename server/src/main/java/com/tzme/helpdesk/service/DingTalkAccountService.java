@@ -54,7 +54,8 @@ public class DingTalkAccountService {
         if (!"ACTIVE".equals(user.getStatus())) throw new BizException(403, "账号已停用");
 
         String initialAdmin = props.getDingtalk().getBootstrapAdminUserId().trim();
-        if (!initialAdmin.isEmpty() && initialAdmin.equals(userId) && management.setting(BOOTSTRAP_SETTING) == null) {
+        if (!initialAdmin.isEmpty() && initialAdmin.equals(userId) && management.setting(BOOTSTRAP_SETTING) == null
+                && !com.tzme.helpdesk.security.Roles.SUPER_ADMIN.equals(user.getRole())) {
             user.setRole("ADMIN");
             users.adminUpdate(user);
             management.createSetting(BOOTSTRAP_SETTING, String.valueOf(user.getId()));

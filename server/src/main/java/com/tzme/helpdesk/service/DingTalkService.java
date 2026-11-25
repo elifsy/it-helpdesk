@@ -58,7 +58,11 @@ public class DingTalkService {
         }
     }
 
-    public record UserProfile(String userId, String name, String employeeNo, List<Long> departmentIds) { }
+    public record UserProfile(String userId, String name, String employeeNo, List<Long> departmentIds, String avatar) {
+        public UserProfile(String userId, String name, String employeeNo, List<Long> departmentIds) {
+            this(userId, name, employeeNo, departmentIds, null);
+        }
+    }
 
     private static final String TOKEN_KEY = "helpdesk:dingtalk:access_token";
 
@@ -166,7 +170,8 @@ public class DingTalkService {
             }
         }
         String employeeNo = result.get("job_number") instanceof String number ? number : null;
-        return new UserProfile(userId, name, employeeNo, List.copyOf(departments));
+        String avatar = result.get("avatar") instanceof String address ? address : null;
+        return new UserProfile(userId, name, employeeNo, List.copyOf(departments), avatar);
     }
 
     private String userProfileError(Map<String, Object> response) {
@@ -207,19 +212,17 @@ public class DingTalkService {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
-    /** 工单通知使用可跳转的 OA 卡片。其他无链接通知继续使用 Markdown。 */
-    public void sendWorkNotify(String dingUserIds, String title, String content, String url) {
+    public void sendWorkNotify(String dingUserIds, String title, String content, String url, String button) {
         if (!enabled() || dingUserIds == null || dingUserIds.isBlank()) {
             return;
         }
         try {
-            String markdown = "### " + title + "\n\n" + content;
-            Map<String, Object> msg = url == null || url.isBlank()
+            String markdown = "### " + title + "\n\n" + content.replace("\\", "\\\\")
+                    .replace("<", "&lt;").replace(">", "&gt;").replace("[", "\\[").replace("]", "\\]");
+            Map<String, Object> msg = url == null || url.isBlank() || button == null
                     ? Map.of("msgtype", "markdown", "markdown", Map.of("title", title, "text", markdown))
-                    : Map.of("msgtype", "oa", "oa", Map.of(
-                            "message_url", url, "pc_message_url", url,
-                            "head", Map.of("bgcolor", "FF0071E3", "text", "IT 服务台"),
-                            "body", Map.of("title", title, "content", "点击查看工单\n" + content)));
+                    : Map.of("msgtype", "action_card", "action_card", Map.of(
+                            "title", title, "markdown", markdown, "single_title", button, "single_url", url));
 
             Map<String, Object> body = new HashMap<>();
             body.put("agent_id", props.getDingtalk().getAgentId());

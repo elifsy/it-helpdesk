@@ -12,10 +12,15 @@ public class RuntimeSettings {
     @NotNull private Boolean requireSolutionCode = true;
     @NotNull private Boolean slaScanEnabled = true;
     @NotNull private Boolean contactSyncEnabled = true;
+    private String slaCron;
+    private String contactCron;
+    private Integer slaReminderHours = JobSettings.DEFAULT_SLA_REMINDER_HOURS;
+    private Integer confirmationReminderHours = JobSettings.DEFAULT_CONFIRMATION_REMINDER_HOURS;
     @NotNull @Min(1) @Max(8760) private Integer p1Hours = 4;
     @NotNull @Min(1) @Max(8760) private Integer p2Hours = 8;
     @NotNull @Min(1) @Max(8760) private Integer p3Hours = 16;
     @NotNull @Min(1) @Max(8760) private Integer p4Hours = 40;
+    @Valid private SlaCalendar slaCalendar;
     @NotBlank @Size(max=255) private String qrcodeBaseUrl = "http://localhost:5173";
     @NotNull @Min(1) @Max(10) private Integer maxUploadMb = 5;
     @NotNull @Min(1) @Max(20) private Integer maxAttachments = 3;

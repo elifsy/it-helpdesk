@@ -8,6 +8,10 @@ class ApiError extends Error { constructor(message, code) { super(message); this
 const source = ts.transpileModule(fs.readFileSync(new URL('../src/stores/auth.ts', import.meta.url), 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 }
 }).outputText
+const menus = {}
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(new URL('../src/config/menus.ts', import.meta.url), 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 }
+}).outputText, { exports: menus })
 
 function setup({ token = '', dingTalk = true, demo = false, meError, loginError } = {}) {
   const values = new Map(token ? [['token', token]] : [])
@@ -17,7 +21,7 @@ function setup({ token = '', dingTalk = true, demo = false, meError, loginError 
   const authApi = {
     config: async () => ({ demoEnabled: demo, corpId: 'corp-from-server' }),
     me: async () => { calls.push(['me']); if (meError) throw meError; return { ...user, token: null } },
-    login: async payload => { calls.push(['login', payload]); if (loginError) throw loginError; return user }
+    login: async payload => { calls.push(['login', payload]); if (loginError) throw loginError; return { ...user, name: payload.demoUser || user.name } }
   }
   const defineStore = (_name, options) => () => {
     const state = options.state()
@@ -31,6 +35,7 @@ function setup({ token = '', dingTalk = true, demo = false, meError, loginError 
     require: name => ({
       pinia: { defineStore }, '../api': { authApi },
       '../api/http': { ApiError, TOKEN_KEY: 'token', DEMO_KEY: 'demo' },
+      '../config/menus': menus,
       '../utils/dingtalk': { isDingTalk: () => dingTalk, requestAuthCode: async corpId => { calls.push(['authCode', corpId]); return 'fresh-code' } }
     })[name]
   })
@@ -74,9 +79,16 @@ test('demo login is selected by server configuration', async () => {
   const { store, calls, values } = setup({ demo: true })
   await store.bootstrap()
   assert.equal(calls[0][0], 'login')
-  assert.equal(calls[0][1].demoUser, '张伟')
+  assert.equal(calls[0][1].demoUser, '谈帥宏')
   assert.equal(values.get('token'), 'new-token')
-  assert.equal(values.get('demo'), '张伟')
+  assert.equal(values.get('demo'), '谈帥宏')
+})
+test('an old demo session outside the local choices switches to the configured demo default', async () => {
+  const { store, calls, values } = setup({ token: 'old-demo-token', demo: true })
+  values.set('demo', '张伟')
+  await store.bootstrap()
+  assert.equal(calls[1][1].demoUser, '谈帥宏')
+  assert.equal(store.user.name, '谈帥宏')
 })
 test('failed identity switch preserves previous demo selection', async () => {
   const { store, values } = setup({ demo: true, loginError: new ApiError('denied', 403) })

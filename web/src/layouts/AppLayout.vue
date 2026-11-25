@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   adminApi,
-  authApi,
   assetRequestApi,
   kbApi,
   metaApi,
@@ -11,15 +10,18 @@ import {
   serviceContactApi,
   statsApi,
   ticketApi,
-  type ServiceContactRoster
+  type ServiceContactRoster,
+  type Notification
 } from '../api'
 import ContactLeaveStatus from '../components/ContactLeaveStatus.vue'
+import AccountBadge from '../components/AccountBadge.vue'
 import { useAuthStore } from '../stores/auth'
 import { useMissingReportStore } from '../stores/missingReports'
 import {
   DEMO_USERS,
   MENUS,
   ROLE_META,
+  ROLE_NAMES,
   TABS,
   roleFromRoles,
   homeForRoles,
@@ -30,14 +32,21 @@ import {
 import { REQ_STATUS_NAME, REQ_TYPE } from '../utils/dict'
 import { isDingTalk } from '../utils/dingtalk'
 import { toast, toastText } from '../utils/toast'
+import { openTutorialPicker, tutorialsFor } from '../config/tutorials'
+import { tutorialPractice, tutorialWorkflow } from '../utils/tutorialPractice'
 
 const route = useRoute()
 const reportState = useMissingReportStore()
 const router = useRouter()
 const auth = useAuthStore()
+const openTutorials = inject(openTutorialPicker)
+const hasTutorials = computed(() => !!auth.user && tutorialsFor(auth.roles, auth.permissions).length > 0)
 
 const workRole = computed<WorkRole>(() => roleFromRoles(auth.roles))
-const meta = computed(() => ROLE_META[workRole.value])
+const meta = computed(() => {
+  const value = ROLE_META[workRole.value]
+  return auth.roles.includes('SUPER_ADMIN') ? { ...value, label: ROLE_NAMES.SUPER_ADMIN } : value
+})
 const groups = computed(() => MENUS[workRole.value].map(g => ({ ...g, items: g.items.filter(m => routeAllowed(auth.roles, m.path, auth.permissions) && (!m.permission || auth.can(m.permission))) })).filter(g => g.items.length))
 const tabs = computed(() => TABS[workRole.value].filter(t => routeAllowed(auth.roles, t.path, auth.permissions)))
 
@@ -105,7 +114,7 @@ watch([isHome, () => auth.user?.id], async ([home, userId], _, onCleanup) => {
     }
   }
 }, { immediate: true })
-const reportRestrictedPage = computed(() => route.path === '/new' || route.path === '/assets')
+const reportRestrictedPage = computed(() => !tutorialWorkflow.value && (route.path === '/new' || route.path === '/assets'))
 watch([() => auth.user?.id, () => route.path], ([id]) => {
   if (!id || ['/home', '/new', '/assets', '/missing-reports'].includes(route.path)) void reportState.refresh(id)
 }, { immediate: true })
@@ -114,10 +123,13 @@ const inDingTalk = isDingTalk()
 /* ---------- 角标 / 通知 ---------- */
 const badges = ref({ pending: 0, approvals: 0 })
 const unread = ref(0)
-const notifies = ref<any[]>([])
+const notifies = ref<Notification[]>([])
 const showNotif = ref(false)
 const showUserMenu = ref(false)
 const showMobileMenu = ref(false)
+const showRail = ref(false)
+const railTrigger = ref<HTMLButtonElement>()
+const railSummary = ref<HTMLElement>()
 const mobileNav = ref<HTMLElement | null>(null)
 let navigationOverflow: string | null = null
 let navigationFocus: HTMLElement | null = null
@@ -136,7 +148,7 @@ watch(showMobileMenu, async open => {
     navigationFocus?.focus()
   }
 })
-watch(() => route.fullPath, () => { showMobileMenu.value = false })
+watch(() => route.fullPath, () => { showMobileMenu.value = false; showRail.value = false })
 function navigationKey(event: KeyboardEvent) {
   if (event.key === 'Escape') { event.preventDefault(); showMobileMenu.value = false }
   if (event.key !== 'Tab') return
@@ -146,44 +158,58 @@ function navigationKey(event: KeyboardEvent) {
   if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
   else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
 }
-function resizeNavigation() { if (window.innerWidth >= 900) showMobileMenu.value = false }
-const copyAccountText = ref('')
-const accountLoading = ref(false)
-const accountError = ref('')
-
-async function refreshAccount() {
-  if (accountLoading.value) return
-  accountLoading.value = true
-  accountError.value = ''
-  try { auth.user = await authApi.me() }
-  catch (e: any) { accountError.value = e.message || '账号资料加载失败，请重试' }
-  finally { accountLoading.value = false }
+function resizeNavigation() {
+  if (window.innerWidth >= 900) showMobileMenu.value = false
+  if (!railTrigger.value?.getClientRects().length) showRail.value = false
 }
-
-function toggleUserMenu() {
-  showUserMenu.value = !showUserMenu.value
-  if (showUserMenu.value) {
-    copyAccountText.value = ''
-    void refreshAccount()
+function closeRail(restoreFocus = false) {
+  showRail.value = false
+  if (restoreFocus) railTrigger.value?.focus()
+}
+async function toggleRail() {
+  if (showRail.value) { closeRail(); return }
+  showNotif.value = false
+  showUserMenu.value = false
+  showRail.value = true
+  await nextTick()
+  if (showRail.value) railSummary.value?.querySelector<HTMLButtonElement>('.rail-close')?.focus()
+}
+function dismissRail(event: PointerEvent) {
+  if (showRail.value && event.target instanceof Node
+      && !railSummary.value?.contains(event.target) && !railTrigger.value?.contains(event.target)) closeRail()
+}
+function railKey(event: KeyboardEvent) {
+  if (showRail.value && event.key === 'Escape') {
+    event.preventDefault()
+    closeRail(true)
   }
 }
+const canOpenMyTickets = computed(() => routeAllowed(auth.roles, '/tickets', auth.permissions))
+const canOpenMyRequests = computed(() => routeAllowed(auth.roles, '/assets', auth.permissions)
+  && (auth.can('request.view.own') || auth.can('request.view.all')))
+const ticketsToConfirm = ref(0)
+const requestsToApprove = ref(0)
 
-async function copyDingTalkId() {
-  const id = auth.user?.dingUserId
-  if (!id) return
-  try {
-    await navigator.clipboard.writeText(id)
-    copyAccountText.value = ''
-    toast('钉钉 UserId 已复制')
-  } catch {
-    copyAccountText.value = '请选中上方 UserId 并复制'
-  }
-}
-
-function signInAgain() {
-  auth.logout()
-  window.location.reload()
-}
+watch([showUserMenu, () => auth.user?.id, canOpenMyTickets, canOpenMyRequests],
+  ([open, userId, showTickets, showRequests], _previous, onCleanup) => {
+    ticketsToConfirm.value = 0
+    requestsToApprove.value = 0
+    if (!open || userId == null) return
+    showNotif.value = false
+    closeRail()
+    let current = true
+    onCleanup(() => { current = false })
+    if (showTickets) {
+      void ticketApi.list({ mine: true, status: 'PENDING_CONFIRM', page: 1, size: 1 }).then(page => {
+        if (current) ticketsToConfirm.value = page.total
+      }).catch(() => {})
+    }
+    if (showRequests) {
+      void assetRequestApi.list({ mine: true, status: 'PENDING' }).then(rows => {
+        if (current) requestsToApprove.value = rows.length
+      }).catch(() => {})
+    }
+  })
 
 /* ---------- 顶栏搜索（本地过滤，走真实工单数据） ---------- */
 const kw = ref('')
@@ -216,7 +242,6 @@ const codes = ref<any[]>([])
 const syncText = ref('')
 const syncing = ref(false)
 const adminRuntime = ref<any>({})
-const adminJobs = ref<any>({})
 
 async function loadBadges() {
   try {
@@ -252,18 +277,16 @@ async function loadRail() {
       engineers.value = (Array.isArray(e) ? e : []).slice(0, 4)
       cats.value = (Array.isArray(c) ? c : []).slice(0, 3)
     } else {
-      const [o, c, s, runtime, jobs] = await Promise.all([
+      const [o, c, s, runtime] = await Promise.all([
         auth.can("stats.view") ? statsApi.overview() : Promise.resolve({}),
         metaApi.categories(),
         metaApi.solutionCodes(),
-        auth.can("settings.manage") ? adminApi.settings() : Promise.resolve({}),
-        auth.can("settings.manage") ? adminApi.jobs() : Promise.resolve({})
+        auth.can("settings.manage") ? adminApi.settings() : Promise.resolve({})
       ])
       ov.value = o || {}
       catsMeta.value = c || {}
       codes.value = Array.isArray(s) ? s : []
       adminRuntime.value = runtime
-      adminJobs.value = jobs
     }
   } catch {
     /* 右栏降级为空，不阻塞主内容 */
@@ -283,17 +306,27 @@ async function loadAll() {
 async function openNotif() {
   showNotif.value = true
   showUserMenu.value = false
+  closeRail()
   try {
     notifies.value = await notifyApi.list()
   } catch {
     notifies.value = []
   }
 }
-async function readOne(n: any) {
+async function readOne(n: Notification) {
   if (n.isRead) return
-  n.isRead = 1
-  unread.value = Math.max(0, unread.value - 1)
-  await notifyApi.read(n.id)
+  try {
+    await notifyApi.read(n.id)
+    if (n.isRead) return
+    n.isRead = 1
+    unread.value = Math.max(0, unread.value - 1)
+  } catch {
+    toast('暂时无法标记该通知为已读')
+  }
+}
+function openNotification(n: Notification) {
+  showNotif.value = false
+  void readOne(n)
 }
 
 async function switchUser(name: string) {
@@ -336,10 +369,18 @@ function tabOn(path: string) {
 
 const onAdminChange = () => { void loadRail() }
 watch(() => auth.permissions.join(','), loadAll)
-onMounted(() => { void loadAll(); window.addEventListener('admin-data-changed', onAdminChange); window.addEventListener('resize', resizeNavigation) })
+onMounted(() => {
+  void loadAll()
+  window.addEventListener('admin-data-changed', onAdminChange)
+  window.addEventListener('resize', resizeNavigation)
+  document.addEventListener('pointerdown', dismissRail)
+  document.addEventListener('keydown', railKey)
+})
 onUnmounted(() => {
   window.removeEventListener('admin-data-changed', onAdminChange)
   window.removeEventListener('resize', resizeNavigation)
+  document.removeEventListener('pointerdown', dismissRail)
+  document.removeEventListener('keydown', railKey)
   if (navigationOverflow !== null) document.body.style.overflow = navigationOverflow
 })
 watch([workRole, personalPage], loadAll)
@@ -381,60 +422,59 @@ watch([workRole, personalPage], loadAll)
             </div>
           </div>
         </div>
-        <button class="bell" @click="openNotif">◔<i v-if="unread > 0" /></button>
-        <button class="avatar" aria-label="查看当前账号" :aria-expanded="showUserMenu" :style="{ background: meta.avatar, color: meta.color }" @click="toggleUserMenu">
-          {{ auth.user?.name?.slice(0, 1) || meta.initial }}
+        <button ref="railTrigger" type="button" class="rail-trigger"
+          :aria-expanded="showRail" aria-controls="workspace-summary" @click="toggleRail">辅助信息</button>
+        <button v-if="hasTutorials" type="button" class="tutorial-trigger" aria-label="新手教程" title="新手教程"
+          aria-haspopup="dialog" @click="openTutorials?.()">
+          <span class="tutorial-icon" aria-hidden="true">?</span><span class="tutorial-label">新手教程</span>
         </button>
+        <button class="bell" aria-label="通知" @click="openNotif">◔<i v-if="unread > 0" /></button>
       </div>
-
-      <!-- 消息通知 -->
-      <div v-if="showNotif" class="pop notif-pop">
-        <div class="pop-h">消息通知 <button @click="showNotif = false">×</button></div>
-        <div v-if="!notifies.length" class="empty">暂无消息</div>
-        <div v-for="n in notifies" :key="n.id" class="notif" @click="readOne(n)">
-          <div class="row"><b>{{ n.title }}</b><span class="sp" /><i v-if="!n.isRead" class="dot" /></div>
-          <div class="small muted">{{ n.content }}</div>
-          <div class="small muted">{{ n.createdAt }}</div>
-        </div>
-      </div>
-
-      <!-- 演示身份 / 工作区切换 -->
-      <div v-if="showUserMenu" class="pop user-pop">
-        <div class="pop-h">当前账号 <button aria-label="关闭账号菜单" @click="showUserMenu = false">×</button></div>
-        <div class="me-line">
-          <b>{{ auth.user?.name }}</b>
-          <span>{{ auth.user?.deptName }}</span>
-          <small>{{ (auth.roles || []).join(' · ') }}</small>
-        </div>
-        <div class="ding-account" :aria-busy="accountLoading">
-          <span>钉钉 UserId</span>
-          <template v-if="auth.user?.dingUserId">
-            <code>{{ auth.user.dingUserId }}</code>
-            <button class="link" @click="copyDingTalkId">复制 UserId</button>
-          </template>
-          <span v-else>{{ accountLoading ? '正在读取…' : '当前账号尚未关联钉钉' }}</span>
-          <small v-if="copyAccountText">{{ copyAccountText }}</small>
-          <div v-if="accountError" class="account-error" role="alert">
-            <small>{{ accountError }}</small>
-            <button class="link" :disabled="accountLoading" @click="refreshAccount">重新读取</button>
-          </div>
-        </div>
+      <AccountBadge v-if="auth.user" :key="auth.user.id" v-model="showUserMenu" :name="auth.user.name"
+        :role-label="meta.label" :department="auth.user.deptName">
+        <template #shortcuts>
+          <nav v-if="canOpenMyTickets || canOpenMyRequests" class="account-shortcuts" aria-label="账户快捷入口">
+            <router-link v-if="canOpenMyTickets" to="/tickets" class="account-shortcut" @click="showUserMenu = false">
+              <span class="account-shortcut-icon" aria-hidden="true">≡</span>
+              <span class="account-shortcut-label">我的工单</span>
+              <small v-if="ticketsToConfirm">{{ ticketsToConfirm }} 单待确认</small>
+              <span class="account-shortcut-arrow" aria-hidden="true">›</span>
+            </router-link>
+            <router-link v-if="canOpenMyRequests" to="/assets?tab=requests" class="account-shortcut" @click="showUserMenu = false">
+              <span class="account-shortcut-icon" aria-hidden="true">⇄</span>
+              <span class="account-shortcut-label">我的申请</span>
+              <small v-if="requestsToApprove">{{ requestsToApprove >= 200 ? '200+' : requestsToApprove }} 笔待审批</small>
+              <span class="account-shortcut-arrow" aria-hidden="true">›</span>
+            </router-link>
+          </nav>
+        </template>
         <template v-if="auth.config?.demoEnabled">
           <div class="pop-sub">演示身份</div>
           <button
             v-for="u in DEMO_USERS"
             :key="u.name"
             class="user-item"
-            :class="{ on: auth.user?.name === u.name }"
+            :class="{ on: auth.user.name === u.name }"
             @click="switchUser(u.name)"
           >
             <span>{{ u.name }}</span><small>{{ u.tag }}</small>
           </button>
         </template>
-        <template v-else>
-          <button class="user-item" @click="signInAgain">重新登录</button>
-        </template>
+      </AccountBadge>
+
+      <!-- 消息通知 -->
+      <div v-if="showNotif" class="pop notif-pop">
+        <div class="pop-h">消息通知 <button @click="showNotif = false">×</button></div>
+        <div v-if="!notifies.length" class="empty">暂无消息</div>
+        <div v-for="n in notifies" :key="n.id" class="notif">
+          <div class="row"><b>{{ n.title }}</b><span class="sp" /><i v-if="!n.isRead" class="dot" /></div>
+          <div class="small muted">{{ n.content }}</div>
+          <div class="small muted">{{ n.createdAt }}</div>
+          <router-link v-if="n.action" :to="n.action.path" class="btn sm notif-action" @click="openNotification(n)">{{ n.action.label }}</router-link>
+          <button v-else-if="!n.isRead" type="button" class="link notif-action" @click="readOne(n)">标为已读</button>
+        </div>
       </div>
+
     </header>
 
     <div class="layout">
@@ -473,54 +513,115 @@ watch([workRole, personalPage], loadAll)
         <div class="me">
           <b>{{ auth.user?.name }}</b>
           <span>{{ auth.user?.deptName }}</span>
-          <small v-if="workRole === 'emp'">热线 内线 8300</small>
+          <small v-if="workRole === 'emp'"></small>
           <small v-else-if="workRole === 'it' || workRole === 'viewer'">当日待受理 {{ badges.pending }} 单</small>
           <small v-else>管理更改已留痕</small>
         </div>
       </aside>
 
-      <!-- 主栏 -->
-      <main class="main">
-        <div v-if="reportRestrictedPage && reportState.loadedFor !== auth.user?.id" class="empty" role="status">正在检查待补报事项…</div>
-        <section v-else-if="reportRestrictedPage && reportState.summary?.blocked" class="card report-block">
-          <h2>请先补报已完成事项</h2>
-          <p>你有 {{ reportState.summary.pending }} 条事项待补报。待补报数量降至 {{ reportState.summary.limit }} 条及以下后，可恢复报修和资产服务。</p>
-          <router-link class="btn pri" to="/missing-reports">查看并补报</router-link>
-        </section>
-        <template v-else>
-          <div v-if="reportRestrictedPage && reportState.summary?.pending" class="card report-notice">
-            <span class="pill b-orange">{{ reportState.summary.pending }} 条待补报</span>
-            <router-link to="/missing-reports">查看已完成事项</router-link>
-          </div>
-          <router-view />
-        </template>
-      </main>
-
-      <!-- 右栏：不打断主任务的辅助信息，数据均来自真实接口 -->
-      <aside class="rail" :class="{ 'home-rail': isHome }">
-        <template v-if="personalPage || workRole === 'emp'">
-          <div class="panel">
-            <h4>我的申请</h4>
-            <div v-if="!reqs.length" class="empty sm">暂无申请</div>
-            <div v-for="r in reqs" :key="r.id" class="line">
-              <span>{{ REQ_TYPE[r.type]?.name || r.typeName || r.type }}</span>
-              <span v-if="r.status === 'PENDING' && r.dingInstanceId" class="tag">钉钉</span>
-              <span class="sp" />
-              <span class="tag" :class="r.status === 'APPROVED' || r.status === 'COMPLETED' ? 'g' : ''">
-                {{ REQ_STATUS_NAME[r.status] || r.statusName || r.status }}
-              </span>
+      <div class="work-area">
+        <!-- 主栏 -->
+        <main class="main">
+          <div v-if="reportRestrictedPage && reportState.loadedFor !== auth.user?.id" class="empty" role="status">正在检查待补报事项…</div>
+          <section v-else-if="reportRestrictedPage && reportState.summary?.blocked" class="card report-block">
+            <h2>请先补报已完成事项</h2>
+            <p>你有 {{ reportState.summary.pending }} 条事项待补报。待补报数量降至 {{ reportState.summary.limit }} 条及以下后，可恢复报修和资产服务。</p>
+            <router-link class="btn pri" to="/missing-reports">查看并补报</router-link>
+          </section>
+          <template v-else>
+            <div v-if="reportRestrictedPage && reportState.summary?.pending" class="card report-notice">
+              <span class="pill b-orange">{{ reportState.summary.pending }} 条待补报</span>
+              <router-link to="/missing-reports">查看已完成事项</router-link>
             </div>
-            <button class="link" @click="router.push('/assets?tab=requests')">查看全部 ›</button>
+            <router-view v-slot="{ Component }">
+              <KeepAlive :max="1">
+                <component :is="Component" v-if="!tutorialPractice" :key="route.matched[route.matched.length - 1]?.path" />
+              </KeepAlive>
+              <component :is="Component" v-if="tutorialPractice" :key="tutorialWorkflow || 'page-practice'" />
+            </router-view>
+          </template>
+        </main>
+
+        <!-- 右栏：不打断主任务的辅助信息，数据均来自真实接口 -->
+        <aside class="rail" :class="{ 'home-rail': isHome }">
+          <div id="workspace-summary" ref="railSummary" class="rail-summary" :class="{ 'is-open': showRail }" aria-label="辅助信息" role="region">
+            <div class="rail-pop-header">
+              <b>辅助信息</b>
+              <button type="button" class="rail-close" aria-label="关闭辅助信息" @click="closeRail(true)">×</button>
+            </div>
+            <template v-if="personalPage || workRole === 'emp'">
+              <div class="panel">
+                <h4>我的申请</h4>
+                <div v-if="!reqs.length" class="empty sm">暂无申请</div>
+                <div v-for="r in reqs" :key="r.id" class="line">
+                  <span>{{ REQ_TYPE[r.type]?.name || r.typeName || r.type }}</span>
+                  <span v-if="r.status === 'PENDING' && r.dingInstanceId" class="tag">钉钉</span>
+                  <span class="sp" />
+                  <span class="tag" :class="r.status === 'APPROVED' || r.status === 'COMPLETED' ? 'g' : ''">
+                    {{ REQ_STATUS_NAME[r.status] || r.statusName || r.status }}
+                  </span>
+                </div>
+                <button class="link" @click="router.push('/assets?tab=requests')">查看全部 ›</button>
+              </div>
+              <div class="panel">
+                <h4>常见问题</h4>
+                <div v-if="!kb.length" class="empty sm">暂无知识条目</div>
+                <button v-for="k in kb" :key="k.id" class="kb" @click="router.push('/kb')">
+                  <span class="ic">▤</span>
+                  <span><b>{{ k.title }}</b><small>{{ k.category }} · 浏览 {{ k.views || 0 }}</small></span>
+                </button>
+              </div>
+            </template>
+
+            <template v-else-if="workRole === 'it' || workRole === 'viewer' || workRole === 'admin'">
+              <div class="panel center">
+                <h4 class="left">SLA 达成率</h4>
+                <div class="ring" :style="{ background: `conic-gradient(#0071e3 0 ${ov.slaRate || 0}%, #eef1f6 ${ov.slaRate || 0}% 100%)` }">
+                  <i>{{ ov.slaRate || 0 }}%</i>
+                </div>
+                <p class="sub">近 30 天 {{ ov.total || 0 }} 单</p>
+              </div>
+              <div class="panel">
+                <h4>工程师工作量</h4>
+                <div v-if="!engineers.length" class="empty sm">暂无数据</div>
+                <div v-for="e in engineers" :key="e.name" class="line">
+                  <span>{{ e.name }}</span><span class="sp" /><span class="v">{{ e.total }} 单</span>
+                </div>
+              </div>
+              <div class="panel">
+                <h4>故障类型 TOP 3</h4>
+                <div v-if="!cats.length" class="empty sm">暂无数据</div>
+                <div v-for="c in cats" :key="c.name" class="line">
+                  <span>{{ c.name }}</span><span class="sp" /><span class="v">{{ c.value ?? c.total ?? c.count ?? 0 }}</span>
+                </div>
+              </div>
+            </template>
+
+            <!-- <template v-else>
+              <div class="panel">
+                <h4>通讯录同步</h4>
+                <div class="line"><span>工单总量</span><span class="sp" /><span class="v">{{ ov.total || 0 }} 单</span></div>
+                <div class="line"><span>故障分类</span><span class="sp" /><span class="v">{{ Object.keys(catsMeta).length }} 类</span></div>
+                <div class="line"><span>解决代码</span><span class="sp" /><span class="v">{{ codes.length }} 项</span></div>
+                <div v-if="auth.can('contact.sync')" class="pills">
+                  <button class="pri" :disabled="syncing" @click="trySync">{{ syncing ? '试跑中…' : '立即试跑' }}</button>
+                </div>
+                <p v-if="syncText" class="sub" style="margin-top: 10px; color: #0071e3">{{ syncText }}</p>
+              </div>
+              <div class="panel">
+                <h4>运行参数</h4>
+                <div class="line"><span>二维码基址</span><span class="sp" /><span class="v mono" style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="adminRuntime.qrcodeBaseUrl">{{ adminRuntime.qrcodeBaseUrl || '—' }}</span></div>
+                <div class="line"><span>统计缓存</span><span class="sp" /><span class="v">{{ adminRuntime.statsCacheSeconds === 0 ? '已关闭' : (adminRuntime.statsCacheSeconds ?? '—') + ' 秒' }}</span></div>
+                <div class="line"><span>故障兜底热线</span><span class="sp" /><span class="v">内线 8300</span></div>
+              </div>
+              <div class="panel">
+                <h4>配置提示</h4>
+                <p class="sub">配置保存后生效。<br />SLA 时限的修改仅影响新建工单。</p>
+              </div>
+            </template> -->
+
           </div>
-          <div class="panel">
-            <h4>常见问题</h4>
-            <div v-if="!kb.length" class="empty sm">暂无知识条目</div>
-            <button v-for="k in kb" :key="k.id" class="kb" @click="router.push('/kb')">
-              <span class="ic">▤</span>
-              <span><b>{{ k.title }}</b><small>{{ k.category }} · 浏览 {{ k.views || 0 }}</small></span>
-            </button>
-          </div>
-          <section v-if="contactRoster && (contactRoster.contacts.length || contactRoster.hotline)" class="panel service-contacts">
+          <section v-if="isHome && contactRoster && (contactRoster.contacts.length || contactRoster.hotline)" class="panel service-contacts">
             <h4>IT 服务联系人</h4>
             <ul v-if="contactRoster.contacts.length" class="service-contact-list">
               <li v-for="(contact, index) in contactRoster.contacts" :key="index">
@@ -532,57 +633,8 @@ watch([workRole, personalPage], loadAll)
               热线 <strong>{{ contactRoster.hotline }}</strong><span v-if="contactRoster.hotlineNote">（{{ contactRoster.hotlineNote }}）</span>
             </p>
           </section>
-        </template>
-
-        <template v-else-if="workRole === 'it' || workRole === 'viewer' || workRole === 'admin'">
-          <div class="panel center">
-            <h4 class="left">SLA 达成率</h4>
-            <div class="ring" :style="{ background: `conic-gradient(#0071e3 0 ${ov.slaRate || 0}%, #eef1f6 ${ov.slaRate || 0}% 100%)` }">
-              <i>{{ ov.slaRate || 0 }}%</i>
-            </div>
-            <p class="sub">近 30 天 {{ ov.total || 0 }} 单</p>
-          </div>
-          <div class="panel">
-            <h4>工程师工作量</h4>
-            <div v-if="!engineers.length" class="empty sm">暂无数据</div>
-            <div v-for="e in engineers" :key="e.name" class="line">
-              <span>{{ e.name }}</span><span class="sp" /><span class="v">{{ e.total }} 单</span>
-            </div>
-          </div>
-          <div class="panel">
-            <h4>故障类型 TOP 3</h4>
-            <div v-if="!cats.length" class="empty sm">暂无数据</div>
-            <div v-for="c in cats" :key="c.name" class="line">
-              <span>{{ c.name }}</span><span class="sp" /><span class="v">{{ c.value ?? c.total ?? c.count ?? 0 }}</span>
-            </div>
-          </div>
-        </template>
-
-        <!-- <template v-else>
-          <div class="panel">
-            <h4>通讯录同步</h4>
-            <p class="sub">{{ adminRuntime.contactSyncEnabled && adminJobs.dingTalkEnabled ? '自动同步已启用' : '自动同步未运行' }}；样例试跑不写库</p>
-            <div class="line"><span>工单总量</span><span class="sp" /><span class="v">{{ ov.total || 0 }} 单</span></div>
-            <div class="line"><span>故障分类</span><span class="sp" /><span class="v">{{ Object.keys(catsMeta).length }} 类</span></div>
-            <div class="line"><span>解决代码</span><span class="sp" /><span class="v">{{ codes.length }} 项</span></div>
-            <div v-if="auth.can('contact.sync')" class="pills">
-              <button class="pri" :disabled="syncing" @click="trySync">{{ syncing ? '试跑中…' : '立即试跑' }}</button>
-            </div>
-            <p v-if="syncText" class="sub" style="margin-top: 10px; color: #0071e3">{{ syncText }}</p>
-          </div>
-          <div class="panel">
-            <h4>运行参数</h4>
-            <div class="line"><span>二维码基址</span><span class="sp" /><span class="v mono" style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="adminRuntime.qrcodeBaseUrl">{{ adminRuntime.qrcodeBaseUrl || '—' }}</span></div>
-            <div class="line"><span>统计缓存</span><span class="sp" /><span class="v">{{ adminRuntime.statsCacheSeconds === 0 ? '已关闭' : (adminRuntime.statsCacheSeconds ?? '—') + ' 秒' }}</span></div>
-            <div class="line"><span>故障兜底热线</span><span class="sp" /><span class="v">内线 8300</span></div>
-          </div>
-          <div class="panel">
-            <h4>配置提示</h4>
-            <p class="sub">配置保存后生效。<br />SLA 时限的修改仅影响新建工单。</p>
-          </div>
-        </template> -->
-
-      </aside>
+        </aside>
+      </div>
     </div>
 
     <div v-if="showMobileMenu" class="mobile-nav-mask" @click.self="showMobileMenu = false" @keydown="navigationKey">
@@ -622,6 +674,7 @@ watch([workRole, personalPage], loadAll)
 .report-block p { margin:12px 0 16px; line-height:1.6; }
 .report-notice { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:12px; }
 .shell {
+  --account-badge-width: 112px;
   min-height: 100vh;
   background: #f5f5f7;
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Microsoft YaHei', sans-serif;
@@ -657,6 +710,10 @@ watch([workRole, personalPage], loadAll)
 .ctx .sep { color: #c7c7cc; }
 .ctx b { color: #1d1d1f; font-weight: 600; font-size: 13.5px; }
 .tools { margin-left: auto; display: flex; align-items: center; gap: 12px; position: relative; }
+.tutorial-trigger { display:flex; align-items:center; justify-content:center; column-gap:5px; min-height:34px; padding:0 7px; border:0; border-radius:8px; background:none; color:#315a6c; font:inherit; font-size:12px; white-space:nowrap; cursor:pointer; }
+.tutorial-trigger:hover { background:#eaf3ff; color:var(--brand); }
+.tutorial-trigger:focus-visible { outline:2px solid var(--brand); outline-offset:1px; }
+.tutorial-icon { display:grid; place-items:center; width:15px; height:15px; border:1px solid currentColor; border-radius:50%; font-weight:700; line-height:1; }
 .search {
   width: 222px; height: 32px; border-radius: 980px; background: #ececee;
   display: flex; align-items: center; gap: 8px; padding: 0 13px; color: #86868b; position: relative;
@@ -671,13 +728,12 @@ watch([workRole, personalPage], loadAll)
 .search-item:hover { background: #f2f5fa; }
 .search-item b { font-size: 12px; font-weight: 600; }
 .search-item .mono { font-size: 10px; color: #86868b; }
-.bell, .avatar {
+.bell {
   width: 30px; height: 30px; border-radius: 50%; border: 0; cursor: pointer;
   display: grid; place-items: center; position: relative; font-size: 14px;
 }
 .bell { background: #fff; color: #6e6e73; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05); }
 .bell i { position: absolute; right: 1px; top: 1px; width: 7px; height: 7px; border-radius: 50%; background: #ff3b30; border: 1.5px solid #fff; }
-.avatar { font-size: 11px; font-weight: 600; }
 .pop {
   position: absolute; top: 54px; right: 0; width: 300px; background: #fff; border-radius: 16px;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.16); z-index: 90; overflow: hidden;
@@ -685,31 +741,33 @@ watch([workRole, personalPage], loadAll)
 .pop-h { display: flex; align-items: center; padding: 13px 16px; font-size: 13px; font-weight: 700; border-bottom: 1px solid #f2f2f4; }
 .pop-h button { margin-left: auto; border: 0; background: none; font-size: 18px; color: #86868b; cursor: pointer; line-height: 1; }
 .notif-pop { max-height: 380px; overflow-y: auto; }
-.notif { padding: 11px 16px; border-bottom: 1px solid #f2f2f4; cursor: pointer; font-size: 12.5px; }
+.notif { padding: 11px 16px; border-bottom: 1px solid #f2f2f4; font-size: 12.5px; }
+.notif-action { margin-top: 6px; }
 .notif:last-child { border-bottom: 0; }
 .notif .dot { width: 7px; height: 7px; border-radius: 50%; background: #ff3b30; }
-.me-line { padding: 13px 16px; display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
-.me-line span { color: #6e6e73; }
-.me-line small { color: #a1a1a6; font-size: 10.5px; }
 .pop-sub { padding: 8px 16px; font-size: 10px; letter-spacing: 0.1em; color: #a1a1a6; background: #fafafb; }
 .user-item { width: 100%; display: flex; align-items: center; gap: 8px; padding: 10px 16px; border: 0; background: transparent; cursor: pointer; font-size: 12.5px; text-align: left; }
 .user-item:hover { background: #f5f8ff; }
 .user-item.on { color: #0071e3; font-weight: 600; }
 .user-item small { margin-left: auto; color: #a1a1a6; font-size: 10.5px; }
-.ding-account { display: grid; gap: 8px; padding: 12px 16px; border-top: 1px solid #eef0f4; font-size: 12px; }
-.ding-account > span, .ding-account small { color: #6e6e73; }
-.ding-account code { overflow-wrap: anywhere; user-select: text; font-size: 13px; line-height: 1.5; color: #1d1d1f; }
-.ding-account .link { justify-self: start; }
-.account-error { display: grid; gap: 6px; }
+.account-shortcuts { display:grid; gap:6px; padding:0 14px 12px; }
+.account-shortcut { display:flex; align-items:center; gap:7px; padding:7px 9px; border:1px solid #e9edf3; border-radius:10px; color:inherit; text-decoration:none; }
+.account-shortcut:hover { background:#f5f8ff; border-color:#d6e6fb; }
+.account-shortcut:focus-visible { outline:2px solid var(--brand); outline-offset:1px; }
+.account-shortcut-icon { display:grid; place-items:center; flex:none; width:24px; height:24px; border-radius:7px; background:#edf5ff; color:var(--brand); font-size:15px; }
+.account-shortcut-label { flex:1; font-size:12px; font-weight:600; }
+.account-shortcut small { color:#505d6c; font-size:10.5px; }
+.account-shortcut-arrow { color:#687789; font-size:16px; line-height:1; }
 
 /* ---------- 三栏栅格 ---------- */
 .layout {
   display: grid;
-  grid-template-columns: 208px minmax(0, 1fr) 300px;
+  grid-template-columns: 208px minmax(0, 1fr);
   gap: 30px;
   padding: 38px 40px 70px;
-  max-width: 1440px;
-  margin: 0 auto;
+  max-width: min(1440px, calc(100% - var(--account-badge-width) - 14px));
+  margin-left: auto;
+  margin-right: max(calc(var(--account-badge-width) + 14px), calc((100% - 1440px) / 2));
   align-items: start;
 }
 .side { position: sticky; top: 100px; }
@@ -739,8 +797,11 @@ watch([workRole, personalPage], loadAll)
 .side .me { margin: 22px 14px 0; padding-top: 16px; border-top: 1px solid #e8e8ed; display: flex; flex-direction: column; gap: 2px; font-size: 11.5px; color: #86868b; }
 .side .me b { color: #1d1d1f; font-size: 12.5px; }
 .side .me small { color: #0071e3; margin-top: 4px; }
+.work-area { display:grid; grid-template-columns:minmax(0,1fr) 300px; align-items:start; gap:30px; min-width:0; }
 .main { min-width: 0; }
-.rail { position: sticky; top: 100px; display: flex; flex-direction: column; gap: 16px; }
+.rail { position:sticky; top:100px; }
+.rail,.rail-summary { display:flex; flex-direction:column; gap:16px; min-width:0; }
+.rail-trigger,.rail-pop-header { display:none; }
 .panel { background: #fff; border-radius: 22px; padding: 22px; box-shadow: 0 2px 14px rgba(0, 0, 0, 0.035); }
 .panel h4 { font-size: 14px; font-weight: 600; margin: 0 0 5px; }
 .panel h4.left { text-align: left; }
@@ -795,27 +856,59 @@ watch([workRole, personalPage], loadAll)
 
 /* 全页布局按屏幕宽度切换，兼容不支持容器查询的钉钉内嵌浏览器。 */
 @media (max-width: 1199px) {
-  .top { padding: 0 26px; gap: 22px; }
+  .shell { --account-badge-width: 100px; }
   .search { width: 160px; }
-  .layout { grid-template-columns: 188px minmax(0, 1fr); gap: 24px; padding: 30px 26px 60px; }
-  .rail { grid-column: 2; position: static; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 6px; align-items: start; }
-  .service-contacts { grid-column: 2; }
+}
+@media (min-width:900px) and (max-width:1599px), (min-width:900px) and (max-height:849px) {
+  .top { padding:0 26px; gap:20px; }
+  .ctx { min-width:0; }
+  .ctx b { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  .role-tag { flex:none; }
+  .layout { grid-template-columns:176px minmax(0,1fr); gap:20px; padding:24px 26px 20px; }
+  .side { top:88px; max-height:calc(100vh - 108px); max-height:calc(100dvh - 108px); overflow-y:auto; scrollbar-width:thin; }
+  .work-area { display:block; }
+  .rail { position:static; }
+  .rail-trigger {
+    display:block; flex:none; padding:6px 11px; border:1px solid var(--line); border-radius:999px;
+    background:#fff; color:#536277; font:inherit; font-size:12px; white-space:nowrap; cursor:pointer;
+  }
+  .rail-trigger:is(:hover,[aria-expanded=true]) { color:var(--brand); border-color:#b6d7fb; background:var(--brand-l); }
+  .rail-summary { display:none; }
+  .rail-summary.is-open {
+    position:fixed; z-index:75; top:73px; right:calc(var(--account-badge-width) + 42px);
+    display:flex; gap:10px; width:320px; max-height:calc(100vh - 89px); max-height:calc(100dvh - 89px);
+    overflow:auto; overscroll-behavior:contain; padding:10px; border:1px solid var(--line);
+    border-radius:18px; background:#f8f9fc; box-shadow:0 12px 32px #18284124;
+  }
+  .rail-pop-header { display:flex; align-items:center; justify-content:space-between; padding:0 4px 0 6px; font-size:13px; }
+  .rail-close { width:28px; height:28px; border:0; border-radius:8px; background:transparent; color:var(--t2); font-size:19px; cursor:pointer; }
+  .rail-close:hover { background:#e9eef6; }
+  .rail-summary .panel { flex:none; border:1px solid var(--line2); border-radius:12px; padding:14px; box-shadow:none; }
+  .rail-summary .ring { width:84px; height:84px; margin:9px auto; }
+  .rail-summary .ring i { width:66px; height:66px; font-size:17px; }
+  .rail-summary .line { padding:7px 0; }
+  .rail .service-contacts { margin-top:16px; }
+  .main :deep(.page-h), .main :deep(.page-h > .row), .main :deep(.filters) { flex-wrap:wrap; }
 }
 @media (max-width: 899px) {
-  .shell { min-height:100vh; min-height:100dvh; }
+  .shell { --account-badge-width: 48px; min-height:100vh; min-height:100dvh; }
   .top { height:calc(56px + env(safe-area-inset-top,0px)); padding: env(safe-area-inset-top,0px) 16px 0; gap:10px; background:rgba(255,255,255,.96); }
   .mobile-menu-button { display:grid; place-items:center; flex:0 0 36px; width:36px; height:40px; padding:0; border:0; background:transparent; color:var(--t1); font-size:23px; }
   .logo { gap:7px; font-size:15px; }
   .tools { gap:8px; }
-  .bell,.avatar { width:38px; height:38px; }
-  .avatar { font-size:14px; }
+  .tutorial-label { display:none; }
+  .tutorial-trigger { width:32px; padding:0; }
+  .tutorial-icon { width:17px; height:17px; }
+  .bell { width:38px; height:38px; }
   .ctx, .search { display: none; }
-  .layout { display: block; padding: 0 0 calc(88px + env(safe-area-inset-bottom,0px)); }
+  .layout { display: block; max-width:none; margin:0; padding: 0 0 calc(88px + env(safe-area-inset-bottom,0px)); }
   .side { display: none; }
-  .main { padding: 20px 16px 0; }
+  .work-area { display:block; }
+  .main { padding: 32px 16px 0; }
   .rail { display: none; }
-  .rail.home-rail { display: block; margin: 12px 16px 0; }
-  .home-rail > :not(.service-contacts) { display: none; }
+  .rail.home-rail { position:static; display:block; }
+  .rail-summary { display:none; }
+  .rail .service-contacts { margin:12px 16px 0; }
   .tabs {
     display: flex; position: fixed; left:0; right:0; bottom:0; height:calc(64px + env(safe-area-inset-bottom,0px)); padding-bottom:env(safe-area-inset-bottom,0px); z-index:70;
     background: rgba(255, 255, 255, 0.96); backdrop-filter: blur(18px);
@@ -834,5 +927,10 @@ watch([workRole, personalPage], loadAll)
   .main :deep(.page-h .inp) { width:100% !important; min-width:0; flex:1; }
   .main :deep(.kpis) { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
   .main :deep(.grid2) { grid-template-columns: minmax(0, 1fr) !important; }
+}
+@media (max-width:350px) {
+  .top { gap:8px; padding-inline:12px; }
+  .tools { gap:5px; }
+  .tutorial-trigger { width:29px; }
 }
 </style>

@@ -5,10 +5,13 @@
  * 一条明细 = 一台设备，互不影响：库存够的直接配发进「待领取」，不够的填 ERP 走采购。
  * 另有「采购目录」维护员工可申请购买的型号。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { assetApi, dingApprovalApi, purchaseApi } from '../../api'
 import { PR_ITEM_STATUS_CLASS, PR_ITEM_STATUS_NAME, PR_STATUS_CLASS, PR_STATUS_NAME } from '../../utils/dict'
 import { toast } from '../../utils/toast'
+import { hasAssetHolder } from '../../utils/assets'
+import { notificationReference } from '../../utils/notification-links'
 import { useAuthStore } from '../../stores/auth'
 import AssetPicker from '../../components/AssetPicker.vue'
 import DeviceIcon from '../../components/DeviceIcon.vue'
@@ -16,9 +19,13 @@ import { autoIconKey, iconClass, iconLabel } from '../../utils/deviceIcons'
 import DeviceIconPicker from '../../components/DeviceIconPicker.vue'
 
 const auth = useAuthStore()
+const route = useRoute()
+const router = useRouter()
+const requestNo = computed(() => notificationReference(route.query.request))
 const tab = ref('PENDING')
 const rows = ref<any[]>([])
 const loading = ref(false)
+let loadVersion = 0
 const acting = ref('')
 
 const showOrder = ref(false)
@@ -52,31 +59,36 @@ const TABS = [
 const filtered = computed(() => rows.value)
 
 async function load() {
+  const version = ++loadVersion
   if (tab.value === 'CATALOG') { await loadCatalog(); return }
   loading.value = true
   try {
-    rows.value = await purchaseApi.list(tab.value ? { status: tab.value } : {})
+    const list = await purchaseApi.list({ status: tab.value || undefined, no: requestNo.value })
+    if (version === loadVersion) rows.value = list
   } catch (e: any) {
-    toast(e.message)
+    if (version === loadVersion) toast(e.message)
   } finally {
-    loading.value = false
+    if (version === loadVersion) loading.value = false
   }
 }
 
 async function loadCatalog() {
+  const version = ++loadVersion
   loading.value = true
   try {
-    catalog.value = await purchaseApi.catalog(true)
+    const list = await purchaseApi.catalog(true)
+    if (version === loadVersion) catalog.value = list
   } catch (e: any) {
-    toast(e.message)
+    if (version === loadVersion) toast(e.message)
   } finally {
-    loading.value = false
+    if (version === loadVersion) loading.value = false
   }
 }
 
 function switchTab(v: string) {
   tab.value = v
-  void load()
+  if (requestNo.value) void router.replace({ path: route.path })
+  else void load()
 }
 
 /** 本地联调：模拟钉钉审批结果，再触发一次同步 */
@@ -154,7 +166,7 @@ async function openAssign(request: any, item: any) {
   try {
     const list = await assetApi.list({})
     spareAssets.value = (list || []).filter((a: any) =>
-      ['闲置', '待入库'].includes(a.status) && !a.userName && !a.borrower)
+      ['闲置', '待入库'].includes(a.status) && !hasAssetHolder(a))
   } catch (e: any) {
     toast(e.message)
   }
@@ -234,8 +246,12 @@ async function removeCatalog(item: any) {
   }
 }
 
-onMounted(() => {
+watch(requestNo, no => {
+  if (no) tab.value = ''
+  rows.value = []
   void load()
+}, { immediate: true })
+onMounted(() => {
   dingApprovalApi.status().then((st: any) => { ding.value = st }).catch(() => {})
 })
 </script>
@@ -251,6 +267,10 @@ onMounted(() => {
       <span v-for="t in TABS" :key="t.v" :class="{ on: tab === t.v }" @click="switchTab(t.v)">{{ t.s }}</span>
     </div>
 
+    <div v-if="requestNo" class="row small">
+      <span>当前购入申请 {{ requestNo }}</span>
+      <button class="btn sm" type="button" @click="switchTab('')">查看全部申请</button>
+    </div>
     <div v-if="loading" class="empty">加载中…</div>
 
     <!-- 采购目录 -->
@@ -283,7 +303,7 @@ onMounted(() => {
 
     <!-- 申请单 -->
     <template v-else>
-      <div v-if="!filtered.length" class="empty">该状态下暂无申请</div>
+      <div v-if="!filtered.length" class="empty">{{ requestNo ? '找不到这张购入申请或无权查看' : '该状态下暂无申请' }}</div>
       <div v-for="r in filtered" :key="r.id" class="card pr-card">
         <div class="row">
           <span v-if="r.status === 'PENDING' && r.dingInstanceId" class="pill b-blue">钉钉审批中</span>
@@ -345,7 +365,7 @@ onMounted(() => {
           </template>
           <template v-else>
             <button class="btn sm danger" :disabled="acting === r.id" @click="reject(r)">驳回</button>
-            <button class="btn sm pri" :disabled="acting === r.id" @click="approve(r)">批准</button>
+            <button class="btn sm pri" :disabled="acting === r.id" data-tutorial-effect="write" @click="approve(r)">批准</button>
           </template>
         </div>
       </div>

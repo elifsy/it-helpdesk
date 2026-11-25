@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { isPracticeRead, tutorialPractice, tutorialWriteMessage } from '../utils/tutorialPractice'
 
 export const TOKEN_KEY = 'it_helpdesk_token'
 export const DEMO_KEY = 'it_helpdesk_demo_user'
@@ -13,6 +14,10 @@ const http = axios.create({
 })
 
 http.interceptors.request.use((config) => {
+  if (tutorialPractice.value) {
+    if (!isPracticeRead(config.method)) throw new ApiError(tutorialWriteMessage)
+    config.headers.set('X-Tutorial-Practice', '1')
+  }
   const token = localStorage.getItem(TOKEN_KEY)
   if (token && !['/auth/login', '/auth/config'].includes(config.url || '')) {
     config.headers.Authorization = `Bearer ${token}`

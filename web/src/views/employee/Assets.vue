@@ -1,34 +1,62 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { assetApi, assetCategoryApi, assetRequestApi, purchaseApi, type AssetCategory } from '../../api'
+import { assetApi, assetCategoryApi, assetRequestApi, purchaseApi, type AssetCategory, type BorrowDueList } from '../../api'
 import { useAuthStore } from '../../stores/auth'
 import { assetActions, eligibleAssets } from '../../utils/assets'
 import { ASSET_STATUS_CLASS, HANDOVER_HINT, HANDOVER_NAME, PR_ITEM_STATUS_CLASS, PR_ITEM_STATUS_NAME, PR_STATUS_CLASS, PR_STATUS_NAME, REQ_STATUS_CLASS, REQ_STATUS_NAME, REQ_TYPE } from '../../utils/dict'
 import { toast } from '../../utils/toast'
+import { notificationReference } from '../../utils/notification-links'
+import { tutorialWorkflow } from '../../utils/tutorialPractice'
 import PurchaseFlow from '../../components/PurchaseFlow.vue'
 import AssetRequestFlow from '../../components/AssetRequestFlow.vue'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const practiceType = tutorialWorkflow.value
+const returnAsset = computed(() => notificationReference(route.query.returnAsset))
+const dueAssets = ref<BorrowDueList>()
+const dueLists = computed(() => [
+  { key: 'overdue', name: '已逾期', rows: dueAssets.value?.overdue || [] },
+  { key: 'upcoming', name: '即将到期', rows: dueAssets.value?.upcoming || [] }
+].filter(group => group.rows.length))
+const focusedApplication = computed(() => {
+  const request = notificationReference(route.query.request)
+  if (request) return { kind: 'asset', no: request }
+  const purchase = notificationReference(route.query.purchase)
+  return purchase ? { kind: 'purchase', no: purchase } : null
+})
+const assetFocused = computed(() => focusedApplication.value?.kind === 'asset')
+const purchaseFocused = computed(() => focusedApplication.value?.kind === 'purchase')
+const focusedRows = ref<any[]>([])
+const focusLoading = ref(false)
+const focusError = ref('')
+let focusVersion = 0
 const assets = ref<any[]>([])
 const categories = ref<AssetCategory[]>([])
 const category = ref('')
 const requests = ref<any[]>([])
+const requestRows = computed(() => assetFocused.value ? focusedRows.value : requests.value)
 const requestPageSize = 10
 const requestPage = ref(1)
-const requestPageCount = computed(() => Math.max(1, Math.ceil(requests.value.length / requestPageSize)))
+const requestPageCount = computed(() => Math.max(1, Math.ceil(requestRows.value.length / requestPageSize)))
 const pageRequests = computed(() =>
-  requests.value.slice((requestPage.value - 1) * requestPageSize, requestPage.value * requestPageSize))
+  requestRows.value.slice((requestPage.value - 1) * requestPageSize, requestPage.value * requestPageSize))
 const requestSection = ref<HTMLDetailsElement>()
+watch([requestSection, () => route.query.tab], ([section, tab], _previous, onCleanup) => {
+  if (!section || tab !== 'requests') return
+  section.open = true
+  const frame = requestAnimationFrame(() => section.scrollIntoView({ block: 'start' }))
+  onCleanup(() => cancelAnimationFrame(frame))
+}, { flush: 'post' })
 const loading = ref(true)
 const detail = ref<any>(null)
 const deviceError = ref('')
 const flow = ref<InstanceType<typeof AssetRequestFlow>>()
 let deviceVersion = 0
 let loadVersion = 0
-const myName = computed(() => auth.user?.name || '')
+const myId = computed(() => auth.user?.id)
 const filteredAssets = computed(() => assets.value.filter(a => !category.value || a.category === category.value))
 /** 本人待审批申请涉及的设备，选择设备时排除，避免重复提交 */
 const pendingNos = computed(() => requests.value
@@ -36,30 +64,86 @@ const pendingNos = computed(() => requests.value
   .map(r => r.assetNo))
 const quick = computed(() => (['RECEIVE', 'BORROW', 'REPLACE', 'RETURN'] as const).map(type => ({
   type, label: REQ_TYPE[type].name.replace('资产', ''), desc: REQ_TYPE[type].desc,
-  count: eligibleAssets(assets.value, type, myName.value, category.value, pendingNos.value).length
+  count: practiceType === type ? 1 : eligibleAssets(assets.value, type, myId.value, category.value, pendingNos.value).length
 })))
 
 /* ------------------------------ 购入申请 ------------------------------ */
 /** 与「领用」同一套选择弹窗：选型号 → 填事由 → 提交 */
 const purchaseFlow = ref<InstanceType<typeof PurchaseFlow>>()
 const purchaseList = ref<any[]>([])
+const purchaseRows = computed(() => purchaseFocused.value ? focusedRows.value : purchaseList.value)
 const purchaseSection = ref<HTMLDetailsElement>()
 const purchaseLoading = ref(false)
 const purchaseError = ref('')
 let purchaseLoadVersion = 0
 const canReadRequests = computed(() => auth.can('request.view.own') || auth.can('request.view.all'))
+type Cancellation = { kind: 'asset' | 'purchase'; id: number; no: string }
+const cancelDialog = ref<HTMLDialogElement>()
+const cancelTarget = ref<Cancellation | null>(null)
+const cancelling = ref(false)
+const cancelError = ref('')
+
+async function loadFocus() {
+  const version = ++focusVersion
+  const target = focusedApplication.value
+  focusedRows.value = []
+  focusError.value = ''
+  focusLoading.value = !!target
+  if (!target) return
+  requestPage.value = 1
+  try {
+    const api = target.kind === 'asset' ? assetRequestApi : purchaseApi
+    const rows = await api.list({ mine: true, no: target.no })
+    if (version === focusVersion) focusedRows.value = rows || []
+  } catch (e: any) {
+    if (version === focusVersion) focusError.value = e.message || '申请读取失败，请重试'
+  } finally {
+    if (version === focusVersion) {
+      focusLoading.value = false
+      await nextTick()
+      const section = target.kind === 'asset' ? requestSection.value : purchaseSection.value
+      if (version === focusVersion) section?.scrollIntoView({ block: 'start' })
+    }
+  }
+}
+watch(focusedApplication, loadFocus, { immediate: true })
 
 function openPurchase() {
   purchaseFlow.value?.open()
 }
 
-async function cancelPurchase(row: any) {
-  if (!window.confirm('撤销这张购入申请？')) return
-  try { await purchaseApi.cancel(row.id); toast('已撤销'); await load() } catch (e: any) { toast(e.message) }
+async function askCancellation(kind: Cancellation['kind'], id: number, no: string) {
+  if (cancelTarget.value || cancelling.value) return
+  cancelTarget.value = { kind, id, no }
+  cancelError.value = ''
+  await nextTick()
+  cancelDialog.value?.showModal()
 }
 
-async function cancelRequest(id: number) {
-  try { await assetRequestApi.cancel(id); await load() } catch (e: any) { toast(e.message) }
+function closeCancellation() {
+  if (!cancelling.value) cancelDialog.value?.close()
+}
+
+function escapeCancellation(event: Event) {
+  if (cancelling.value) event.preventDefault()
+}
+
+async function confirmCancellation() {
+  const target = cancelTarget.value
+  if (!target || cancelling.value) return
+  cancelling.value = true
+  cancelError.value = ''
+  try {
+    const api = target.kind === 'purchase' ? purchaseApi : assetRequestApi
+    await api.cancel(target.id)
+    cancelDialog.value?.close()
+    toast('已撤销')
+    await Promise.all([load(), loadFocus()])
+  } catch (cause) {
+    cancelError.value = cause instanceof Error ? cause.message : '撤销失败，请重试'
+  } finally {
+    cancelling.value = false
+  }
 }
 
 function onRequestSubmitted() {
@@ -88,8 +172,14 @@ async function loadPurchases() {
 
 onMounted(async () => {
   await load()
-  if (route.query.type) openPick(String(route.query.type))
+  if (returnAsset.value) openReturnLink(returnAsset.value)
+  else if (route.query.type) openPick(String(route.query.type))
   else if (route.query.asset) await openDevice(String(route.query.asset))
+})
+watch(returnAsset, async no => {
+  if (!no) return
+  await load()
+  if (returnAsset.value === no) openReturnLink(no)
 })
 watch(() => route.query.type, type => { if (type) openPick(String(type)) })
 watch(() => route.query.asset, no => {
@@ -99,7 +189,7 @@ watch(() => route.query.asset, no => {
 
 function actionsOf(asset: any) {
   const pending = pendingNos.value.includes(asset.no)
-  return assetActions(asset, myName.value).filter(action => {
+  return assetActions(asset, myId.value).filter(action => {
     // 已有待审批申请的设备，不再提供重复申请入口（报修不受影响）
     if (pending && action !== 'REPAIR') return false
     return action === 'REPAIR' ? auth.can('ticket.create') : auth.can('request.create')
@@ -115,6 +205,9 @@ async function load() {
   const version = ++loadVersion
   loading.value = true
   if (canReadRequests.value) void loadPurchases()
+  if (!practiceType) void assetApi.borrowDue().then(value => {
+    if (version === loadVersion) dueAssets.value = value
+  }).catch(() => { if (version === loadVersion) dueAssets.value = undefined })
   try {
     const [a, r, c] = await Promise.all([
       assetApi.list({}),
@@ -133,12 +226,26 @@ function openPick(type: string, no?: string) {
   detail.value = null
   flow.value?.open(type, no)
 }
+function openReturnLink(no: string) {
+  const asset = assets.value.find(item => item.no === no)
+  if (asset && asset.status === '借出中' && asset.borrowerId === myId.value && auth.can('request.create')) {
+    if (!pendingNos.value.includes(no)) {
+      openPick('RETURN', no)
+      return
+    }
+    if (requestSection.value) requestSection.value.open = true
+    toast('该设备已有申请正在处理，可在「我的申请」查看')
+  } else {
+    toast('该设备当前无需归还，或账号没有申请权限')
+  }
+  void router.replace({ path: '/assets' })
+}
 function applyFor(type: string, no: string) {
   if (type === 'REPAIR') { router.push({ path: '/new', query: { asset: no } }); return }
   flow.value?.open(type, no)
 }
 function onFlowClosed() {
-  if (route.query.type || route.query.asset) void router.replace({ path: '/assets' })
+  if (route.query.type || route.query.asset || route.query.returnAsset) void router.replace({ path: '/assets' })
 }
 async function openDevice(no: string) {
   const version = ++deviceVersion
@@ -172,7 +279,9 @@ function closeDetail() {
 
     <div v-if="auth.can('request.create')" class="sec-t" style="margin-top: 8px"><h3>发起资产申请</h3></div>
     <div v-if="auth.can('request.create')" class="grid">
-      <div v-for="q in quick" :key="q.type" class="qcard" :class="{ dim: !q.count }" @click="openPick(q.type)">
+      <div v-for="q in quick" :key="q.type" class="qcard" :class="{ dim: !q.count }" :data-workflow-asset="q.type"
+        role="button" tabindex="0" @click="openPick(q.type)" @keydown.enter.prevent="($event.currentTarget as HTMLElement).click()"
+        @keydown.space.prevent="($event.currentTarget as HTMLElement).click()">
         <div class="qi">{{ REQ_TYPE[q.type].icon }}</div>
         <div class="sp">
           <div class="qt">{{ q.label }}</div>
@@ -190,15 +299,36 @@ function closeDetail() {
       </div>
     </div>
 
-    <details ref="requestSection" class="service-section">
+    <section v-if="dueLists.length" class="service-section borrow-due" aria-label="借用到期">
+      <header class="service-summary"><span>借用到期</span></header>
+      <div class="section-content">
+        <div v-for="group in dueLists" :key="group.key" class="due-group">
+          <h4>{{ group.name }} <span class="section-count">{{ group.rows.length }} 台</span></h4>
+          <div v-for="device in group.rows" :key="device.no" class="due-row">
+            <div><b>{{ device.name }}</b><p class="small muted">{{ device.no }} · 约定归还 {{ device.borrowDue }}</p></div>
+            <button v-if="auth.can('request.create') && !pendingNos.includes(device.no)" type="button" class="btn sm" @click="openPick('RETURN', device.no)">申请归还</button>
+            <span v-else-if="pendingNos.includes(device.no)" class="small muted">申请处理中</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <details ref="requestSection" class="service-section" :open="assetFocused || undefined">
       <summary class="service-summary">
         <span>我的申请</span>
-        <span class="section-count">{{ requests.length }} 条</span>
+        <span class="section-count">{{ requestRows.length }} 条</span>
         <span class="section-chevron" aria-hidden="true"></span>
       </summary>
       <div class="section-content request-list">
-        <div v-if="loading && !requests.length" class="empty">加载中…</div>
-        <div v-else-if="!requests.length" class="empty">还没有申请记录</div>
+        <div v-if="assetFocused" class="row small">
+          <span>当前申请 {{ focusedApplication?.no }}</span>
+          <router-link to="/assets" class="btn sm">查看全部申请</router-link>
+        </div>
+        <div v-if="assetFocused ? focusLoading : loading && !requests.length" class="empty">加载中…</div>
+        <div v-else-if="assetFocused && focusError" class="empty" role="alert">
+          {{ focusError }} <button type="button" class="btn sm" @click="loadFocus">重新加载</button>
+        </div>
+        <div v-else-if="!requestRows.length" class="empty">{{ assetFocused ? '找不到这张申请或无权查看' : '还没有申请记录' }}</div>
         <div v-for="r in pageRequests" :key="r.id" class="card">
           <div class="row">
             <b style="font-size: 13px">{{ REQ_TYPE[r.type]?.name }}</b>
@@ -226,8 +356,8 @@ function closeDetail() {
             <button class="btn sm" @click="openDevice(r.assetNo)">查看设备</button>
             <button
               v-if="r.status === 'PENDING' && auth.can('request.create')"
-              class="btn sm danger"
-              @click="cancelRequest(r.id)"
+              class="btn sm danger" type="button" :disabled="cancelling"
+              @click="askCancellation('asset', r.id, r.no)"
             >
               撤销
             </button>
@@ -241,20 +371,24 @@ function closeDetail() {
       </div>
     </details>
 
-    <details ref="purchaseSection" class="service-section">
+    <details ref="purchaseSection" class="service-section" :open="purchaseFocused || undefined">
       <summary class="service-summary">
         <span>购入申请</span>
-        <span class="section-count">{{ purchaseList.length }} 条</span>
+        <span class="section-count">{{ purchaseRows.length }} 条</span>
         <span class="section-chevron" aria-hidden="true"></span>
       </summary>
       <div class="section-content purchase-list">
-        <div v-if="purchaseLoading && !purchaseList.length" class="empty">加载中…</div>
-        <div v-else-if="purchaseError" class="empty" role="alert">
-          {{ purchaseError }}
-          <button type="button" class="btn sm" @click="loadPurchases">重新加载</button>
+        <div v-if="purchaseFocused" class="row small">
+          <span>当前购入申请 {{ focusedApplication?.no }}</span>
+          <router-link to="/assets" class="btn sm">查看全部申请</router-link>
         </div>
-        <div v-else-if="!purchaseList.length" class="empty">还没有购入申请</div>
-        <div v-for="p in purchaseList" :key="p.id" class="card">
+        <div v-if="purchaseFocused ? focusLoading : purchaseLoading && !purchaseList.length" class="empty">加载中…</div>
+        <div v-else-if="purchaseFocused ? focusError : purchaseError" class="empty" role="alert">
+          {{ purchaseFocused ? focusError : purchaseError }}
+          <button type="button" class="btn sm" @click="purchaseFocused ? loadFocus() : loadPurchases()">重新加载</button>
+        </div>
+        <div v-else-if="!purchaseRows.length" class="empty">{{ purchaseFocused ? '找不到这张购入申请或无权查看' : '还没有购入申请' }}</div>
+        <div v-for="p in purchaseRows" :key="p.id" class="card">
           <div class="row">
             <b style="font-size: 13px">{{ p.itemSummary || p.itemName }}</b>
             <span class="pill" :class="PR_STATUS_CLASS[p.status]">{{ PR_STATUS_NAME[p.status] }}</span>
@@ -282,7 +416,8 @@ function closeDetail() {
           <div class="row" style="margin-top: 8px">
             <span class="small muted">{{ p.createdAt }}</span>
             <span class="sp" />
-            <button v-if="p.status === 'PENDING'" class="btn sm danger" @click="cancelPurchase(p)">撤销</button>
+            <button v-if="p.status === 'PENDING'" class="btn sm danger" type="button" :disabled="cancelling"
+              @click="askCancellation('purchase', p.id, p.no)">撤销</button>
           </div>
         </div>
       </div>
@@ -379,10 +514,38 @@ function closeDetail() {
     </div>
   </div>
   <PurchaseFlow ref="purchaseFlow" @submitted="onPurchaseSubmitted" />
+  <dialog ref="cancelDialog" class="dlg cancel-dialog" role="alertdialog"
+    aria-labelledby="cancel-application-title" aria-describedby="cancel-application-description"
+    @cancel="escapeCancellation" @close="cancelTarget = null">
+    <template v-if="cancelTarget">
+      <div id="cancel-application-title" class="dlg-h">确认撤销{{ cancelTarget.kind === 'purchase' ? '购入申请' : '资产申请' }}</div>
+      <div class="dlg-b">
+        <p id="cancel-application-description">是否撤销申请 <strong>{{ cancelTarget.no }}</strong>？</p>
+        <p v-if="cancelError" class="cancel-error" role="alert">{{ cancelError }}</p>
+      </div>
+      <div class="dlg-f">
+        <button class="btn" type="button" :disabled="cancelling" autofocus @click="closeCancellation">返回</button>
+        <button class="btn cancel-confirm" type="button" :disabled="cancelling" @click="confirmCancellation">
+          {{ cancelling ? '正在撤销…' : '确认撤销' }}
+        </button>
+      </div>
+    </template>
+  </dialog>
 </template>
 
 <style scoped>
+.due-group + .due-group { margin-top:15px; }
+.due-group h4 { margin:0 0 4px; }
+.due-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 0; border-bottom:1px solid var(--line2); }
+.due-row p { margin:4px 0 0; overflow-wrap:anywhere; }
+.due-row button { flex-shrink:0; }
 
+.cancel-dialog { max-width:min(420px, calc(100% - 32px)); margin:auto; border:0; padding:0; color:var(--t1); }
+.cancel-dialog::backdrop { background:rgba(0, 0, 0, .42); }
+.cancel-dialog p { margin:0; line-height:1.6; overflow-wrap:anywhere; }
+.cancel-dialog .cancel-error { margin-top:10px; color:var(--red); }
+.cancel-confirm { background:#b42318; border-color:#b42318; color:#fff; }
+.cancel-confirm:not(:disabled):hover { background:#942017; border-color:#942017; }
 .service-section { margin-top: 12px; min-width: 0; }
 .service-summary {
   display: flex;
@@ -399,6 +562,7 @@ function closeDetail() {
   list-style: none;
 }
 .service-summary::-webkit-details-marker { display: none; }
+.service-section { scroll-margin-top: calc(96px + env(safe-area-inset-top, 0px)); }
 .service-summary:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 .section-count { color: var(--t3); font-size: 12px; font-weight: 400; }
 .section-chevron {

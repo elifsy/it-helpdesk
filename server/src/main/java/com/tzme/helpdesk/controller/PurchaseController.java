@@ -68,8 +68,9 @@ public class PurchaseController {
     @GetMapping("/purchase-requests")
     @com.tzme.helpdesk.security.RequiresPermission({"request.view.own", "request.view.all"})
     public ApiResponse<List<PurchaseRequest>> list(@RequestParam(required = false) String status,
-                                                    @RequestParam(required = false) Boolean mine) {
-        return ApiResponse.ok(service.list(status, mine));
+                                                    @RequestParam(required = false) Boolean mine,
+                                                    @RequestParam(required = false) String no) {
+        return ApiResponse.ok(service.list(status, mine, no));
     }
 
     @GetMapping("/purchase-requests/{id}")

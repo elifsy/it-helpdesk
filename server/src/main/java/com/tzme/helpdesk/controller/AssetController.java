@@ -6,6 +6,7 @@ import com.tzme.helpdesk.common.CurrentUser;
 import com.tzme.helpdesk.domain.Asset;
 import com.tzme.helpdesk.service.AssetService;
 import com.tzme.helpdesk.service.AssetWorkbook;
+import com.tzme.helpdesk.service.BorrowDueService;
 import com.tzme.helpdesk.service.MissingReportGuard;
 import com.tzme.helpdesk.security.Roles;
 import lombok.RequiredArgsConstructor;
@@ -28,6 +29,7 @@ public class AssetController {
     private final AssetService assetService;
     private final AssetWorkbook workbook;
     private final MissingReportGuard missingReports;
+    private final BorrowDueService borrowDue;
 
     private void checkPersonalAssetAccess() {
         var user = CurrentUser.require();
@@ -61,6 +63,13 @@ public class AssetController {
         return ApiResponse.ok(assetService.detail(no));
     }
 
+    @GetMapping("/borrow-due")
+    @com.tzme.helpdesk.security.RequiresPermission("asset.view")
+    public ApiResponse<BorrowDueService.DueAssets> borrowDue() {
+        checkPersonalAssetAccess();
+        return ApiResponse.ok(borrowDue.mine());
+    }
+
     @GetMapping("/{no}/qrcode")
     @com.tzme.helpdesk.security.RequiresPermission({"asset.view"})
     public ApiResponse<Map<String, String>> qrcode(@PathVariable String no) {
@@ -81,6 +90,22 @@ public class AssetController {
                 .filename("资产批量导入模板.xlsx", StandardCharsets.UTF_8).build().toString();
         return ResponseEntity.ok().header(HttpHeaders.CONTENT_DISPOSITION, filename)
                 .contentType(MediaType.parseMediaType(AssetWorkbook.CONTENT_TYPE)).body(workbook.template());
+    }
+
+    @GetMapping("/people")
+    @com.tzme.helpdesk.security.RequiresPermission("asset.create")
+    public ApiResponse<List<AssetService.HolderOption>> people(@RequestParam(defaultValue = "") String keyword) {
+        return ApiResponse.ok(assetService.searchHolders(keyword));
+    }
+
+    public record HolderBinding(@jakarta.validation.constraints.NotBlank String editToken,
+                                @jakarta.validation.constraints.Positive Long userId,
+                                @jakarta.validation.constraints.Positive Long borrowerId) { }
+
+    @PutMapping("/{no}/holders")
+    @com.tzme.helpdesk.security.RequiresPermission("asset.create")
+    public ApiResponse<Map<String,Object>> bindHolders(@PathVariable String no, @jakarta.validation.Valid @RequestBody HolderBinding req) {
+        return ApiResponse.ok(assetService.bindHolders(no, req.editToken(), req.userId(), req.borrowerId()));
     }
 
     @PostMapping(value = "/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

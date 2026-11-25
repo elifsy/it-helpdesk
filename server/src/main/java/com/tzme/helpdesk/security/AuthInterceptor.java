@@ -25,6 +25,10 @@ public class AuthInterceptor implements HandlerInterceptor {
         if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
             return true;
         }
+        if ("1".equals(request.getHeader("X-Tutorial-Practice"))
+                && !"GET".equals(request.getMethod()) && !"HEAD".equals(request.getMethod())) {
+            throw new BizException(409, "练习到此为止，操作没有提交。");
+        }
         String auth = request.getHeader("Authorization");
         if (auth != null && auth.startsWith("Bearer ")) {
             LoginUser claims;

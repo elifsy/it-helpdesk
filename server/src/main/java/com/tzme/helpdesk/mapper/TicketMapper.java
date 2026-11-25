@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
 import java.util.Map;
+import java.time.LocalDateTime;
 
 @Mapper
 public interface TicketMapper {
@@ -46,7 +47,13 @@ public interface TicketMapper {
                @Param("cat1") String cat1,
                @Param("assetNo") String assetNo);
 
-    List<Ticket> findTimeout(@Param("limit") int limit);
+    List<Ticket> findTimeout(@Param("now") LocalDateTime now, @Param("before") LocalDateTime before, @Param("limit") int limit);
+
+    List<Ticket> findConfirmationReminders(@Param("before") LocalDateTime before, @Param("limit") int limit);
+
+    int markTimeoutReminder(@Param("no") String no, @Param("now") LocalDateTime now, @Param("before") LocalDateTime before);
+
+    int markConfirmationReminder(@Param("no") String no, @Param("now") LocalDateTime now, @Param("before") LocalDateTime before);
 
     Map<String, Object> overview();
 

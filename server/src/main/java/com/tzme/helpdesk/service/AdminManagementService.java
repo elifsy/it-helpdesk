@@ -5,6 +5,7 @@ import com.tzme.helpdesk.domain.*;
 import com.tzme.helpdesk.dto.*;
 import com.tzme.helpdesk.mapper.*;
 import com.tzme.helpdesk.security.LoginUser;
+import com.tzme.helpdesk.security.Roles;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -13,7 +14,7 @@ import java.util.*;
 @Service
 @RequiredArgsConstructor
 public class AdminManagementService {
-    public static final List<String> ROLES = com.tzme.helpdesk.security.Roles.ALL;
+    public static final List<String> ROLES = Roles.ALL;
     private final UserMapper users;
     private final DeptMapper depts;
     private final TicketMapper tickets;
@@ -24,34 +25,50 @@ public class AdminManagementService {
 
     public static LoginUser requireAdmin() {
         LoginUser u = CurrentUser.require();
-        if (!u.hasRole("ADMIN")) throw new BizException(403,"只有系统管理员可以管理系统");
+        if (!Roles.isAdmin(u.role())) throw new BizException(403,"只有系统管理员可以管理系统");
         return u;
     }
-    private void lockManagement(String permission) {
+    private User lockManagement(String permission) {
         com.tzme.helpdesk.security.Permissions.require(permission);
         LoginUser current = CurrentUser.require();
         management.lockSetting("management-lock");
         User actor = users.findById(current.id());
         if (actor == null || !"ACTIVE".equals(actor.getStatus()) || !rolePermissions.resolve(actor).hasPermission(permission))
             throw new BizException(403,"管理权限已变更，请刷新页面");
+        return actor;
     }
+    @Transactional(readOnly = true)
     public PageResult<User> users(String keyword, String status, int page, int size) {
-        com.tzme.helpdesk.security.Permissions.require("user.manage"); int p=Math.max(1,page), s=Math.max(1,Math.min(100,size));
-        return new PageResult<>(users.adminList(keyword,status,(p-1)*s,s),users.adminCount(keyword,status),p,s);
+        com.tzme.helpdesk.security.Permissions.require("user.manage");
+        int p = Math.max(1, page), s = Math.max(1, Math.min(100, size));
+        long offset = (p - 1L) * s;
+        var query = PersonSearch.query(keyword);
+        if (query.value().isEmpty()) {
+            return new PageResult<>(users.adminList(status, offset, s), users.adminCount(status), p, s);
+        }
+        List<Long> matched = users.listSearchablePeople(status, false).stream()
+                .filter(query::matches).map(User::getId).toList();
+        List<Long> pageIds = matched.stream().skip(offset).limit(s).toList();
+        return new PageResult<>(pageIds.isEmpty() ? List.of() : users.adminListByIds(pageIds), matched.size(), p, s);
     }
     @Transactional
     public User updateUser(Long id, UserAdminReq req) {
-        lockManagement("user.manage");
+        User actor = lockManagement("user.manage");
         if (!ROLES.contains(req.getRole())) throw new BizException("请选择有效角色");
         User target = users.findByIdForUpdate(id);
         if (target==null) throw new BizException(404,"用户不存在");
-        if (!CurrentUser.require().hasRole("ADMIN") && ("ADMIN".equals(target.getRole()) || "ADMIN".equals(req.getRole()))) throw new BizException(403,"仅管理员可以维护管理员账号");
-        if (id.equals(CurrentUser.require().id()) && CurrentUser.require().hasRole("ADMIN") && (!"ADMIN".equals(req.getRole()) || !"ACTIVE".equals(req.getStatus())))
+        String actorRole = Roles.normalize(actor.getRole());
+        String targetRole = Roles.normalize(target.getRole());
+        if (!Roles.SUPER_ADMIN.equals(actorRole) && (Roles.SUPER_ADMIN.equals(targetRole) || Roles.SUPER_ADMIN.equals(req.getRole())))
+            throw new BizException(403,"仅超级管理员可以维护超级管理员账号");
+        if (!Roles.isAdmin(actorRole) && (Roles.isAdmin(targetRole) || Roles.isAdmin(req.getRole())))
+            throw new BizException(403,"仅管理员可以维护管理员账号");
+        if (id.equals(actor.getId()) && Roles.isAdmin(actorRole) && (!actorRole.equals(req.getRole()) || !"ACTIVE".equals(req.getStatus())))
             throw new BizException("不能停用当前账号或移除自己的管理员角色");
         Dept dept = req.getDeptId()==0 ? null : depts.findById(req.getDeptId());
         if (req.getDeptId()!=0 && dept==null) throw new BizException("部门不存在");
         int moved=0;
-        boolean losesHandling = !rolePermissions.config().getAssignments().get(req.getRole()).contains("ticket.handle");
+        boolean losesHandling = !rolePermissions.permissionsFor(req.getRole()).contains("ticket.handle");
         if (("DISABLED".equals(req.getStatus()) || losesHandling) && tickets.countOpenAssigned(id)>0) {
             User next = req.getHandoverId()==null ? null : users.findByIdForUpdate(req.getHandoverId());
             if (next==null || id.equals(next.getId()) || !"ACTIVE".equals(next.getStatus())

@@ -2,13 +2,21 @@ package com.tzme.helpdesk.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.tzme.helpdesk.common.BizException;
+import com.tzme.helpdesk.common.CurrentUser;
 import com.tzme.helpdesk.config.HelpdeskProperties;
 import com.tzme.helpdesk.dto.DutySettings;
+import com.tzme.helpdesk.dto.JobSettings;
 import com.tzme.helpdesk.dto.RuntimeSettings;
+import com.tzme.helpdesk.dto.SlaCalendar;
 import com.tzme.helpdesk.mapper.ManagementMapper;
+import com.tzme.helpdesk.security.Roles;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.DependsOn;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.scheduling.support.CronExpression;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.net.URI;
@@ -23,6 +31,7 @@ public class RuntimeSettingsService {
     private final ObjectMapper json;
     private final HelpdeskProperties props;
     private final AuditService audit;
+    private final ApplicationEventPublisher events;
 
     public RuntimeSettings get() {
         String saved = mapper.setting("runtime");
@@ -34,13 +43,26 @@ public class RuntimeSettingsService {
         return normalize(defaults);
     }
 
+    public ObjectNode forClient(RuntimeSettings value) {
+        ObjectNode result = json.valueToTree(value);
+        result.remove(List.of("slaScanEnabled", "contactSyncEnabled", "slaCron", "contactCron", "slaReminderHours", "confirmationReminderHours"));
+        return result;
+    }
+
     @Transactional
     public RuntimeSettings save(RuntimeSettings input) {
         com.tzme.helpdesk.security.Permissions.require("settings.manage");
         mapper.createSetting("runtime", write(get()));
         RuntimeSettings previous = read(mapper.lockSetting("runtime"));
         if (!previous.getRevision().equals(input.getRevision())) throw new BizException(409,"配置已被其他管理员修改，请刷新后重试");
+        input.setSlaScanEnabled(previous.getSlaScanEnabled());
+        input.setContactSyncEnabled(previous.getContactSyncEnabled());
+        input.setSlaCron(previous.getSlaCron());
+        input.setContactCron(previous.getContactCron());
+        input.setSlaReminderHours(previous.getSlaReminderHours());
+        input.setConfirmationReminderHours(previous.getConfirmationReminderHours());
         if (input.getDuty() == null) input.setDuty(previous.getDuty());
+        if (input.getSlaCalendar() == null) input.setSlaCalendar(previous.getSlaCalendar());
         boolean legacyChanged = !Objects.equals(previous.getCategories(), input.getCategories());
         boolean typedChanged = input.getCategoriesByType() != null && !Objects.equals(previous.getCategoriesByType(), input.getCategoriesByType());
         if (legacyChanged || typedChanged) com.tzme.helpdesk.security.Permissions.require("dict.manage");
@@ -50,8 +72,59 @@ public class RuntimeSettingsService {
         input.setRevision(previous.getRevision()+1);
         mapper.updateSetting("runtime", write(input));
         audit.record("SETTINGS_UPDATE", "runtime", "配置版本 " + previous.getRevision() + " → " + input.getRevision()
-                + "；修改前：" + write(previous) + "；修改后：" + write(input));
+                + "；修改前：" + forClient(previous) + "；修改后：" + forClient(input));
         return input;
+    }
+
+    public JobSettings jobs() {
+        requireJobAdmin();
+        return jobSchedule();
+    }
+
+    public JobSettings jobSchedule() {
+        return jobSettings(get());
+    }
+
+    @Transactional
+    public JobSettings saveJobs(JobSettings input) {
+        requireJobAdmin();
+        String slaCron = validateCron("超时工单扫描", input.slaCron());
+        String contactCron = validateCron("通讯录同步", input.contactCron());
+        mapper.createSetting("runtime", write(get()));
+        RuntimeSettings current = read(mapper.lockSetting("runtime"));
+        if (!current.getRevision().equals(input.revision())) throw new BizException(409, "配置已被其他管理员修改，请重新加载后重试");
+        current.setSlaScanEnabled(input.slaScanEnabled());
+        current.setSlaCron(slaCron);
+        current.setContactSyncEnabled(input.contactSyncEnabled());
+        current.setContactCron(contactCron);
+        if (input.slaReminderHours() != null) current.setSlaReminderHours(input.slaReminderHours());
+        if (input.confirmationReminderHours() != null) current.setConfirmationReminderHours(input.confirmationReminderHours());
+        current.setRevision(current.getRevision() + 1);
+        mapper.updateSetting("runtime", write(current));
+        JobSettings saved = jobSettings(current);
+        audit.record("JOB_SETTINGS_UPDATE", "jobs", "配置版本 " + input.revision() + " → " + saved.revision());
+        events.publishEvent(saved);
+        return saved;
+    }
+
+    private JobSettings jobSettings(RuntimeSettings value) {
+        return new JobSettings(value.getRevision(), value.getSlaScanEnabled(),
+                Objects.requireNonNullElse(value.getSlaCron(), JobSettings.DEFAULT_SLA_CRON),
+                value.getContactSyncEnabled(), Objects.requireNonNullElse(value.getContactCron(), props.getDingtalk().getSyncCron()),
+                Objects.requireNonNullElse(value.getSlaReminderHours(), JobSettings.DEFAULT_SLA_REMINDER_HOURS),
+                Objects.requireNonNullElse(value.getConfirmationReminderHours(), JobSettings.DEFAULT_CONFIRMATION_REMINDER_HOURS));
+    }
+
+    private void requireJobAdmin() {
+        if (!CurrentUser.require().hasRole(Roles.SUPER_ADMIN)) throw new BizException(403, "仅超级管理员可管理定时任务");
+    }
+
+    private String validateCron(String label, String cron) {
+        String value = cron.trim().replaceAll("\\s+", " ");
+        if (!Scheduled.CRON_DISABLED.equals(value) && !CronExpression.isValidExpression(value)) {
+            throw new BizException(label + "的 Cron 表达式无效，请填写有效的 Spring Cron 表达式");
+        }
+        return value;
     }
 
     @Transactional
@@ -71,6 +144,13 @@ public class RuntimeSettingsService {
     }
 
     public void validate(RuntimeSettings input) {
+        SlaCalendar calendar = input.getSlaCalendar();
+        if (!java.time.LocalTime.parse(calendar.start()).isBefore(java.time.LocalTime.parse(calendar.end())))
+            throw new BizException("工作结束时间须晚于开始时间");
+        var response = calendar.responseHours();
+        for (int i = 1; i < response.size(); i++) {
+            if (response.get(i) < response.get(i - 1)) throw new BizException("首次响应时限需满足 P1 ≤ P2 ≤ P3 ≤ P4");
+        }
         if (!(input.getP1Hours() <= input.getP2Hours() && input.getP2Hours() <= input.getP3Hours() && input.getP3Hours() <= input.getP4Hours()))
             throw new BizException("SLA 时限需满足 P1 ≤ P2 ≤ P3 ≤ P4");
         try {
@@ -99,6 +179,7 @@ public class RuntimeSettingsService {
     }
     private RuntimeSettings normalize(RuntimeSettings value) {
         if (value.getDuty() == null) value.setDuty(DutySettings.defaults());
+        if (value.getSlaCalendar() == null) value.setSlaCalendar(SlaCalendar.defaults());
         if (value.getCategoriesByType() == null) value.setCategoriesByType(TicketCategories.fromLegacy(value.getCategories()));
         value.setCategories(TicketCategories.merge(value.getCategoriesByType()));
         return value;

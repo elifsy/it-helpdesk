@@ -57,8 +57,7 @@ public class MissingReportService {
 
     public List<Applicant> search(String keyword) {
         requireStaff();
-        if (keyword.isBlank()) return List.of();
-        return users.adminList(keyword.strip(), "ACTIVE", 0, 20).stream()
+        return users.searchActivePeople(keyword, false).stream()
                 .map(user -> new Applicant(user.getId(), user.getName(), user.getDeptName(), user.getEmployeeNo())).toList();
     }
 

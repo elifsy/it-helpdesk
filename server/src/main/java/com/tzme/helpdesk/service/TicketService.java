@@ -9,6 +9,7 @@ import com.tzme.helpdesk.dto.*;
 import com.tzme.helpdesk.mapper.*;
 import com.tzme.helpdesk.security.LoginUser;
 import com.tzme.helpdesk.support.PriorityCalculator;
+import com.tzme.helpdesk.support.SlaWorkTime;
 import com.tzme.helpdesk.support.TicketStatus;
 import com.tzme.helpdesk.vo.TicketDetailVO;
 import lombok.RequiredArgsConstructor;
@@ -38,6 +39,7 @@ public class TicketService {
     private final RolePermissionService rolePermissions;
     private final KnowledgeManagementService knowledge;
     private final MissingReportGuard missingReports;
+    private final com.fasterxml.jackson.databind.ObjectMapper json;
 
     // ---------------- 查询 ----------------
 
@@ -109,6 +111,8 @@ public class TicketService {
         t.setStatus(TicketStatus.CLOSED);
         t.setSource("紧急处理补报");
         t.setDueAt(null);
+        t.setResponseDueAt(null);
+        t.setSlaCalendarJson(null);
         t.setFinishedAt(report.getCompletedAt());
         t.setClosedAt(LocalDateTime.now());
         t.setSolutionNote(report.getDescription());
@@ -126,7 +130,7 @@ public class TicketService {
         if (categories == null || (req.getCat2()!=null && !req.getCat2().isBlank() && !categories.contains(req.getCat2())))
             throw new BizException("问题分类与当前问题类型不匹配，请重新选择");
         String priority = PriorityCalculator.calc(req.getCat1(), req.getImpact(), req.getWorkImpact());
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = slaNow();
 
         Ticket t = new Ticket();
         t.setTitle(req.getTitle());
@@ -149,7 +153,14 @@ public class TicketService {
         t.setSource(req.getSource() == null ? "钉钉工作台" : req.getSource());
         t.setKbHit(req.getKbHit());
         t.setTriedKb(req.getTriedKb() == null ? 0 : req.getTriedKb());
-        t.setDueAt(now.plusHours(runtime.hoursOf(priority)));
+        t.setCreatedAt(now);
+        var calendar = runtime.getSlaCalendar();
+        var clock = new SlaWorkTime(calendar);
+        try { t.setSlaCalendarJson(json.writeValueAsString(calendar)); }
+        catch (com.fasterxml.jackson.core.JsonProcessingException e) { throw new IllegalStateException("无法保存工单工作日历", e); }
+        int priorityIndex = priority.charAt(1) - '1';
+        t.setResponseDueAt(clock.add(now, calendar.responseHours().get(priorityIndex) * 3600L));
+        t.setDueAt(clock.add(now, runtime.hoursOf(priority) * 3600L));
         return t;
     }
 
@@ -165,17 +176,17 @@ public class TicketService {
         if (t.getAssigneeId() != null && !u.id().equals(t.getAssigneeId()))
             throw new BizException(409, "工单已分配给其他工程师，请刷新页面");
         String from = t.getStatus();
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = slaNow();
         t.setStatus(TicketStatus.IN_PROGRESS);
         t.setAssigneeId(u.id());
         t.setAssigneeName(u.name());
-        if (t.getAcceptedAt() == null) t.setAcceptedAt(now);
+        recordFirstResponse(t, now);
         t.setAssignedAt(now);
         ticketMapper.update(t);
         String remark = req == null || req.getRemark() == null ? "" : req.getRemark().trim();
         event(no, from, t.getStatus(), "ACCEPT", u.name(), "受理并接单，处理工程师：" + u.name()
                 + (remark.isBlank() ? "" : "；" + remark));
-        notifyService.send(t.getCreatorName(), "工单已受理",
+        notifyService.send(t.getCreatorId(), t.getCreatorName(), "工单已受理",
                 no + " 已由工程师 " + u.name() + " 接单处理。", "TICKET", no);
         Ticket accepted = fillRemain(ticketMapper.findByNo(no));
         fillQueue(List.of(accepted));
@@ -196,15 +207,14 @@ public class TicketService {
         t.setStatus(TicketStatus.IN_PROGRESS);
         t.setAssigneeId(eng.getId());
         t.setAssigneeName(eng.getName());
-        t.setAssignedAt(LocalDateTime.now());
-        if (t.getAcceptedAt() == null) {
-            t.setAcceptedAt(LocalDateTime.now());
-        }
+        LocalDateTime now = slaNow();
+        t.setAssignedAt(now);
+        recordFirstResponse(t, now);
         ticketMapper.update(t);
         event(no, from, t.getStatus(), "DISPATCH", u.name(), "派单给 " + eng.getName());
-        notifyService.send(eng.getName(), "有新工单派给你",
+        notifyService.send(eng.getId(), eng.getName(), "有新工单派给你",
                 no + " " + t.getTitle() + "（" + t.getPriority() + "）", "TICKET", no);
-        notifyService.send(t.getCreatorName(), "工单已派单",
+        notifyService.send(t.getCreatorId(), t.getCreatorName(), "工单已派单",
                 no + " 已安排工程师 " + eng.getName() + " 处理。", "TICKET", no);
         return ticketMapper.findByNo(no);
     }
@@ -232,7 +242,7 @@ public class TicketService {
         LoginUser u = CurrentUser.require();
         com.tzme.helpdesk.security.Permissions.require("ticket.handle");
         management.lockSetting("management-lock");
-        Ticket t = requireTicket(no);
+        Ticket t = lockTicket(no);
         requireStatus(t, TicketStatus.IN_PROGRESS);
 
         // 关单时确认问题分类（不再维护解决代码）；分类必须属于该工单的问题类型
@@ -246,10 +256,12 @@ public class TicketService {
         t.setCat1(req.getCat1());
         t.setCat2(req.getCat2());
         t.setSolutionNote(req.getNote());
-        t.setFinishedAt(LocalDateTime.now());
+        t.setFinishedAt(slaNow());
+        long workSeconds = elapsed(t, t.getCreatedAt(), t.getFinishedAt()) - pausedSeconds(t);
+        t.setResolveWorkMinutes(Math.max(0, workSeconds) / 60);
         ticketMapper.update(t);
         event(no, from, t.getStatus(), "FINISH", u.name(), req.getCat1() + (req.getCat2() == null || req.getCat2().isBlank() ? "" : " · " + req.getCat2()) + "｜" + req.getNote());
-        notifyService.send(t.getCreatorName(), "工单待确认",
+        notifyService.send(t.getCreatorId(), t.getCreatorName(), "工单待确认",
                 no + " 已处理完成：" + req.getNote() + "，请确认是否解决。", "TICKET", no);
         return ticketMapper.findByNo(no);
     }
@@ -266,9 +278,11 @@ public class TicketService {
         boolean solved = req.getSolved() == null || Boolean.TRUE.equals(req.getSolved());
         if (!solved) {
             t.setStatus(TicketStatus.IN_PROGRESS);
+            t.setFinishedAt(null);
+            t.setResolveWorkMinutes(null);
             ticketMapper.update(t);
             event(no, from, t.getStatus(), "CONFIRM", u.name(), "员工反馈未解决：" + safe(req.getRemark()));
-            notifyService.send(safeName(t.getAssigneeName()), "员工反馈未解决",
+            notifyService.send(t.getAssigneeId(), safeName(t.getAssigneeName()), "员工反馈未解决",
                     no + " 员工反馈问题仍未解决，请继续跟进。", "TICKET", no);
             return ticketMapper.findByNo(no);
         }
@@ -281,9 +295,82 @@ public class TicketService {
         ticketMapper.update(t);
         knowledge.captureClosedTicket(t);
         event(no, from, t.getStatus(), "RATE", u.name(), "确认解决并评价 " + safe(String.valueOf(req.getScore())) + " 星");
-        notifyService.send(safeName(t.getAssigneeName()), "工单已关闭",
+        notifyService.send(t.getAssigneeId(), safeName(t.getAssigneeName()), "工单已关闭",
                 no + " 员工已确认解决。", "TICKET", no);
         return ticketMapper.findByNo(no);
+    }
+
+    @Transactional
+    public Ticket requestInfo(String no, TicketInfoReq req) {
+        LoginUser user = CurrentUser.require();
+        Ticket ticket = lockTicket(no);
+        if (!canHandleInfo(ticket, user)) throw new BizException(403, "当前账号没有跟进该工单的权限");
+        requireStatus(ticket, TicketStatus.IN_PROGRESS);
+        var calendar = calendarOf(ticket);
+        if (calendar == null) calendar = settings.get().getSlaCalendar();
+        if (calendar.pauseForInfo() && ticket.getDueAt() != null) ticket.setSlaPausedAt(slaNow());
+        ticket.setStatus(TicketStatus.PENDING_USER);
+        ticketMapper.update(ticket);
+        event(no, TicketStatus.IN_PROGRESS, TicketStatus.PENDING_USER, "PAUSE", user.name(), req.note().trim());
+        notifyService.send(ticket.getCreatorId(), ticket.getCreatorName(), "工单需要补充信息", no + " 请补充：" + req.note().trim(), "TICKET", no);
+        return fillRemain(ticketMapper.findByNo(no));
+    }
+
+    @Transactional
+    public Ticket provideInfo(String no, TicketInfoReq req) {
+        LoginUser user = CurrentUser.require();
+        Ticket ticket = lockTicket(no);
+        boolean reporter = ticket.getCreatorId().equals(user.id()) && user.hasPermission("ticket.confirm");
+        if (!reporter && !canHandleInfo(ticket, user)) throw new BizException(403, "只有报修人或工单工程师可以恢复处理");
+        requireStatus(ticket, TicketStatus.PENDING_USER);
+        LocalDateTime since = ticket.getSlaPausedAt();
+        if (since != null) {
+            long seconds = Math.max(0, elapsed(ticket, since, slaNow()));
+            var calendar = calendarOf(ticket);
+            ticket.setDueAt(calendar == null ? ticket.getDueAt().plusSeconds(seconds) : new SlaWorkTime(calendar).add(ticket.getDueAt(), seconds));
+            ticket.setSlaPausedSeconds(pausedSeconds(ticket) + seconds);
+            ticket.setSlaPausedAt(null);
+        }
+        ticket.setStatus(TicketStatus.IN_PROGRESS);
+        ticketMapper.update(ticket);
+        event(no, TicketStatus.PENDING_USER, TicketStatus.IN_PROGRESS, "RESUME", user.name(), req.note().trim());
+        if (reporter && ticket.getAssigneeId() != null) {
+            notifyService.send(ticket.getAssigneeId(), ticket.getAssigneeName(), "报修人已补充信息", no + " 已恢复处理。", "TICKET", no);
+        } else if (!reporter) {
+            notifyService.send(ticket.getCreatorId(), ticket.getCreatorName(), "工单已恢复处理", no + " 已恢复处理。", "TICKET", no);
+        }
+        return fillRemain(ticketMapper.findByNo(no));
+    }
+
+    private boolean canHandleInfo(Ticket ticket, LoginUser user) {
+        return user.hasPermission("ticket.handle") && (user.hasPermission("ticket.view.all") || user.id().equals(ticket.getAssigneeId()));
+    }
+
+    private void recordFirstResponse(Ticket ticket, LocalDateTime now) {
+        if (ticket.getAcceptedAt() != null) return;
+        ticket.setAcceptedAt(now);
+        ticket.setResponseWorkMinutes(Math.max(0, elapsed(ticket, ticket.getCreatedAt(), now)) / 60);
+        if (ticket.getResponseDueAt() != null) ticket.setSlaRemindedAt(null);
+    }
+
+    private LocalDateTime slaNow() {
+        return LocalDateTime.now(com.tzme.helpdesk.job.ScheduledJobs.ZONE).withNano(0);
+    }
+
+    private SlaCalendar calendarOf(Ticket ticket) {
+        if (ticket.getSlaCalendarJson() == null) return null;
+        try { return json.readValue(ticket.getSlaCalendarJson(), SlaCalendar.class); }
+        catch (com.fasterxml.jackson.core.JsonProcessingException e) { throw new IllegalStateException("无法读取工单工作日历", e); }
+    }
+
+    private long elapsed(Ticket ticket, LocalDateTime from, LocalDateTime to) {
+        var calendar = calendarOf(ticket);
+        return calendar == null ? Duration.between(from, to).getSeconds() : new SlaWorkTime(calendar).between(from, to);
+    }
+
+    private long pausedSeconds(Ticket ticket) {
+        if (ticket.getSlaPausedSeconds() != null) return ticket.getSlaPausedSeconds();
+        return ticket.getPausedMin() == null ? 0 : ticket.getPausedMin() * 60L;
     }
 
     @Transactional
@@ -325,7 +412,7 @@ public class TicketService {
         t.setSolutionNote(req.getReason());
         ticketMapper.update(t);
         event(no, from, t.getStatus(), "REJECT", u.name(), req.getReason());
-        notifyService.send(t.getCreatorName(), "工单被驳回", no + " 驳回原因：" + req.getReason(), "TICKET", no);
+        notifyService.send(t.getCreatorId(), t.getCreatorName(), "工单被驳回", no + " 驳回原因：" + req.getReason(), "TICKET", no);
         return ticketMapper.findByNo(no);
     }
 
@@ -344,14 +431,37 @@ public class TicketService {
         return ticketMapper.findByNo(no);
     }
 
-    /** 定时任务：超时提醒（同一工单 4 小时内只提醒一次，靠通知去重做不到，这里只做扫描与提醒） */
+    /** 只通知本轮成功登记的工单，重复调度或并发扫描也使用数据库中的提醒时间。 */
+    @Transactional
     public int scanTimeout() {
-        List<Ticket> list = ticketMapper.findTimeout(50);
-        for (Ticket t : list) {
-            notifyService.send(safeName(t.getAssigneeName()), "工单已超时",
-                    t.getNo() + " 已超过解决时限，请尽快处理。", "SLA", t.getNo());
+        var schedule = settings.jobSchedule();
+        if (!schedule.slaScanEnabled()) return 0;
+        LocalDateTime now = slaNow();
+        LocalDateTime repeatBefore = now.minusHours(schedule.slaReminderHours());
+        int notified = 0;
+        for (Ticket candidate : ticketMapper.findTimeout(now, repeatBefore, 50)) {
+            String no = candidate.getNo();
+            if (ticketMapper.markTimeoutReminder(no, now, repeatBefore) == 0) continue;
+            Ticket ticket = ticketMapper.findByNoForUpdate(no);
+            boolean first = candidate.getSlaRemindedAt() == null;
+            User assignee = ticket.getAssigneeId() == null ? null : userMapper.findById(ticket.getAssigneeId());
+            if (assignee == null || !"ACTIVE".equals(assignee.getStatus())) {
+                incomingNotifications.remindUnassignedTicket(ticket, first ? "未接单工单已超时" : "未接单工单超时催办");
+            } else {
+                notifyService.send(assignee.getId(), assignee.getName(), first ? "工单已超时" : "超时工单催办",
+                        no + " 已超过解决时限，请尽快处理。", "SLA", no);
+            }
+            notified++;
         }
-        return list.size();
+        LocalDateTime confirmationBefore = now.minusHours(schedule.confirmationReminderHours());
+        for (Ticket ticket : ticketMapper.findConfirmationReminders(confirmationBefore, 50)) {
+            String no = ticket.getNo();
+            if (ticketMapper.markConfirmationReminder(no, now, confirmationBefore) == 0) continue;
+            notifyService.send(ticket.getCreatorId(), ticket.getCreatorName(), "工单待确认提醒",
+                    no + " 已处理完成，请确认问题是否解决。", "TICKET", no);
+            notified++;
+        }
+        return notified;
     }
 
     // ---------------- 内部 ----------------
@@ -401,6 +511,7 @@ public class TicketService {
         e.setToStatus(to);
         e.setAction(action);
         e.setOperator(operator);
+        if ("ACCEPT".equals(action)) e.setOperatorId(CurrentUser.require().id());
         e.setRemark(remark);
         eventMapper.insert(e);
     }
@@ -417,11 +528,14 @@ public class TicketService {
     }
 
     private Ticket fillRemain(Ticket t) {
-        if (t.getDueAt() != null && !TicketStatus.isEnded(t.getStatus())) {
-            LocalDateTime now = LocalDateTime.now();
-            long min = Duration.between(now, t.getDueAt()).toMinutes();
-            t.setRemainMinutes(min);
-            t.setOverdue(t.getDueAt().isBefore(now));
+        LocalDateTime deadline = t.getDueAt();
+        LocalDateTime response = t.getResponseDueAt();
+        if (t.getAcceptedAt() == null && response != null && (deadline == null || response.isBefore(deadline))) deadline = response;
+        if (deadline != null && !TicketStatus.isEnded(t.getStatus()) && !TicketStatus.PENDING_CONFIRM.equals(t.getStatus())) {
+            boolean paused = t.getSlaPausedAt() != null;
+            LocalDateTime now = paused ? t.getSlaPausedAt() : slaNow();
+            t.setRemainMinutes(elapsed(t, now, deadline) / 60);
+            t.setOverdue(!paused && deadline.isBefore(now));
         } else {
             t.setOverdue(false);
         }
@@ -453,6 +567,10 @@ public class TicketService {
                 a.add("RECORD");
                 a.add("FINISH");
             }
+            if (canHandleInfo(t, u)) a.add("REQUEST_INFO");
+        } else if (TicketStatus.PENDING_USER.equals(s)) {
+            if (owner && u.hasPermission("ticket.confirm")) a.add("PROVIDE_INFO");
+            else if (canHandleInfo(t, u)) a.add("RESUME_INFO");
         } else if (TicketStatus.PENDING_CONFIRM.equals(s)) {
             if (owner && u.hasPermission("ticket.confirm")) {
                 a.add("CONFIRM");

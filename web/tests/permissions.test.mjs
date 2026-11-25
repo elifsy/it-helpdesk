@@ -9,12 +9,16 @@ vm.runInNewContext(ts.transpileModule(fs.readFileSync(new URL('../src/config/men
 }).outputText, { exports, URLSearchParams })
 const { ROLE_NAMES, roleFromRoles, homeForRoles, routeAllowed } = exports
 
-test('the UI exposes exactly the four requested roles', () => {
-  assert.deepEqual(Object.keys(ROLE_NAMES).sort(), ['ADMIN', 'IT', 'USER', 'VIEWER'])
+test('the UI recognizes the five staff roles, including super administrator', () => {
+  assert.deepEqual(Object.keys(ROLE_NAMES).sort(), ['ADMIN', 'IT', 'SUPER_ADMIN', 'USER', 'VIEWER'])
   assert.equal(ROLE_NAMES.USER, '普通用户')
   assert.equal(ROLE_NAMES.VIEWER, '可查看用户')
   assert.equal(roleFromRoles(['IT']), 'it')
   assert.equal(roleFromRoles(['VIEWER']), 'viewer')
+  assert.equal(ROLE_NAMES.SUPER_ADMIN, '超级管理员')
+  assert.equal(roleFromRoles(['SUPER_ADMIN']), 'admin')
+  assert.equal(homeForRoles(['SUPER_ADMIN'], ['stats.view']), '/admin/dashboard')
+  assert.equal(routeAllowed(['SUPER_ADMIN'], '/admin/missing-reports', []), true)
 })
 test('an explicitly restricted viewer follows its configured view-only permissions', () => {
   const permissions = ['ticket.view.all', 'asset.view', 'request.view.all', 'kb.view', 'stats.view']
@@ -38,6 +42,14 @@ test('delegated management capabilities expose their own sections only', () => {
   assert.equal(routeAllowed(['IT'], '/admin/config?tab=matrix', ['user.manage']), false)
   assert.equal(routeAllowed(['IT'], '/admin/config?tab=dict', ['dict.manage']), true)
   assert.equal(routeAllowed(['IT'], '/admin/config?tab=depts', ['contact.sync']), true)
+})
+test('scheduled jobs are exclusive to super administrators', () => {
+  const path = '/admin/config?tab=jobs'
+  for (const role of ['ADMIN', 'IT', 'USER', 'VIEWER']) {
+    assert.equal(routeAllowed([role], path, ['settings.manage']), false)
+  }
+  assert.equal(routeAllowed(['SUPER_ADMIN'], path, ['settings.manage']), true)
+  assert.equal(routeAllowed(['ADMIN'], '/admin/config', ['settings.manage']), true)
 })
 test('a user without business permissions still has a safe home route', () => {
   assert.equal(homeForRoles(['USER'], []), '/home')

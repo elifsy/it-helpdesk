@@ -25,6 +25,7 @@ public class ManagementSchemaInitializer implements InitializingBean {
         DingApprovalSchemaMigration.upgrade(dataSource);
         NotificationSchemaMigration.upgrade(dataSource);
         ApplicantIdentityMigration.upgrade(dataSource);
+        AccountBadgeSchemaMigration.upgrade(dataSource);
         JdbcTemplate jdbc = new JdbcTemplate(dataSource);
         Boolean hasCategoryNote = jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<Boolean>) connection -> {
             try (var columns = connection.getMetaData().getColumns(connection.getCatalog(), null, "it_ticket", "category_note")) {
@@ -40,6 +41,19 @@ public class ManagementSchemaInitializer implements InitializingBean {
         });
         if (!Boolean.TRUE.equals(hasAssignedAt))
             jdbc.execute("alter table it_ticket add column assigned_at datetime default null");
+        if (addTicketColumn(jdbc, "sla_reminded_at", "datetime")) {
+            jdbc.update("update it_ticket t set sla_reminded_at=(select max(n.created_at) from it_notify n "
+                    + "where n.type='SLA' and n.ref_no=t.no and n.recipient_id=t.assignee_id "
+                    + "and n.title='工单已超时'),updated_at=updated_at "
+                    + "where t.assignee_id is not null and t.status not in ('PENDING_CONFIRM','CLOSED','REJECTED','CANCELLED')");
+        }
+        addTicketColumn(jdbc, "confirmation_reminded_at", "datetime");
+        addTicketColumn(jdbc, "sla_calendar_json", "text");
+        addTicketColumn(jdbc, "response_due_at", "datetime");
+        addTicketColumn(jdbc, "response_work_minutes", "bigint");
+        addTicketColumn(jdbc, "resolve_work_minutes", "bigint");
+        addTicketColumn(jdbc, "sla_paused_at", "datetime");
+        addTicketColumn(jdbc, "sla_paused_seconds", "bigint");
         jdbc.update("update it_ticket set assigned_at=coalesce("
                 + "(select max(created_at) from it_ticket_event where ticket_no=it_ticket.no and action='DISPATCH'),"
                 + "accepted_at,created_at), updated_at=updated_at where assignee_id is not null and assigned_at is null");
@@ -68,5 +82,16 @@ public class ManagementSchemaInitializer implements InitializingBean {
                 + "where table_schema=database() and table_name='sys_user' and column_name='role'",String.class);
         if (length != null && (length < 128 || !"USER".equals(defaultRole)))
             jdbc.execute("alter table sys_user modify role varchar(128) not null default 'USER'");
+    }
+
+    private boolean addTicketColumn(JdbcTemplate jdbc, String name, String type) {
+        Boolean exists = jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<Boolean>) connection -> {
+            try (var columns = connection.getMetaData().getColumns(connection.getCatalog(), null, "it_ticket", name)) {
+                return columns.next();
+            }
+        });
+        if (Boolean.TRUE.equals(exists)) return false;
+        jdbc.execute("alter table it_ticket add column " + name + " " + type + " default null");
+        return true;
     }
 }

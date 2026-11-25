@@ -403,12 +403,12 @@ async function main() {
   console.log(`  Redis      ${cfg.REDIS_ENABLED === 'false' ? '已关闭（单机降级）' : '已启用'}`)
   console.log(`  日志       logs/server.log  logs/web.log`)
   console.log('')
-  if (cfg.DINGTALK_ENABLED === 'true') {
+  if (cfg.DINGTALK_ENABLED === 'true' && cfg.DINGTALK_DEMO_LOGIN !== 'true') {
     console.log('  当前为钉钉免登，请从已配置的钉钉工作台应用入口打开。')
     console.log('  普通浏览器不会提供演示身份切换。')
   } else {
-    console.log('  本地演示：顶栏头像切到 张伟 提报修，')
-    console.log('  再切 李强 受理接单并处理关单、张伟 确认评价。')
+    console.log('  本地演示：在右上角「我的账户」切换身份。')
+    console.log('  谈帥宏、刘宇泽（普通用户），林凤新（IT），邵昕炜（超级管理员）。')
   }
   console.log('')
   console.log('  按 Ctrl+C 停止所有服务。')

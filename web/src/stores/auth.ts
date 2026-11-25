@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { authApi, type LoginResult } from '../api'
 import { ApiError, DEMO_KEY, TOKEN_KEY } from '../api/http'
+import { DEMO_USERS } from '../config/menus'
 import { isDingTalk, requestAuthCode } from '../utils/dingtalk'
 
 interface AuthState {
@@ -9,6 +10,8 @@ interface AuthState {
   loading: boolean
   config: { demoEnabled: boolean; corpId: string } | null
 }
+
+const isListedDemoUser = (name: string | null) => DEMO_USERS.some(user => user.name === name)
 
 export const useAuthStore = defineStore('auth', {
   state: (): AuthState => ({
@@ -34,15 +37,20 @@ export const useAuthStore = defineStore('auth', {
         this.config = await authApi.config()
         if (this.token) {
           try {
-            this.user = await authApi.me()
-            return
+            const user = await authApi.me()
+            if (!this.config.demoEnabled || isListedDemoUser(user.name)) {
+              this.user = user
+              return
+            }
+            this.logout()
           } catch (e) {
             if (!(e instanceof ApiError) || e.code !== 401) throw e
             this.logout()
           }
         }
         if (this.config.demoEnabled) {
-          await this.loginAsDemo(localStorage.getItem(DEMO_KEY) || '张伟')
+          const saved = localStorage.getItem(DEMO_KEY)
+          await this.loginAsDemo(saved && isListedDemoUser(saved) ? saved : DEMO_USERS[0].name)
         } else if (isDingTalk()) {
           const code = await requestAuthCode(this.config.corpId)
           await this.applyLogin({ authCode: code })

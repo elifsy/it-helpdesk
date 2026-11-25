@@ -114,6 +114,8 @@ function search() {
             :key="t.no"
             :class="{ over: t.overdue }"
             style="cursor: pointer"
+            data-tutorial-control
+            :aria-label="'查看工单 ' + t.no"
             @click="router.push(`/admin/ticket/${t.no}`)"
           >
             <td class="mono">{{ t.no }}</td>
@@ -127,7 +129,7 @@ function search() {
             <td>{{ statusName(t.status) }}</td>
             <td>{{ t.assigneeName || '—' }}</td>
             <td :style="{ color: t.overdue ? 'var(--red)' : 'var(--t2)', fontSize: '12px' }">
-              {{ remainText(t.remainMinutes) || '—' }}
+              {{ remainText(t.remainMinutes, t.workTime, t.slaPausedAt) || '—' }}
             </td>
             <td><button class="btn sm">查看</button></td>
           </tr>
@@ -143,7 +145,7 @@ function search() {
         <strong>{{ ticket.title }}</strong>
         <span v-if="ticket.pendingReportCount" class="pill b-orange">{{ ticket.pendingReportCount }} 条待补报</span>
         <div class="card-line card-meta"><span>{{ ticket.creatorName }} · {{ ticket.cat1 }}</span><span>{{ statusName(ticket.status) }}</span></div>
-        <div class="card-line card-meta"><span>工程师：{{ ticket.assigneeName || '待接单' }}</span><span :class="{ 'overdue-text': ticket.overdue }">{{ remainText(ticket.remainMinutes) || '查看详情 ›' }}</span></div>
+        <div class="card-line card-meta"><span>工程师：{{ ticket.assigneeName || '待接单' }}</span><span :class="{ 'overdue-text': ticket.overdue }">{{ remainText(ticket.remainMinutes, ticket.workTime, ticket.slaPausedAt) || '查看详情 ›' }}</span></div>
       </button>
     </div>
 

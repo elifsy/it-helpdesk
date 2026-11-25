@@ -1,15 +1,18 @@
 package com.tzme.helpdesk.controller;
 
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.tzme.helpdesk.common.*;
 import com.tzme.helpdesk.config.HelpdeskProperties;
 import com.tzme.helpdesk.domain.*;
 import com.tzme.helpdesk.dto.*;
+import com.tzme.helpdesk.job.ScheduledJobs;
+import com.tzme.helpdesk.job.BorrowDueJob;
 import com.tzme.helpdesk.mapper.*;
 import com.tzme.helpdesk.service.*;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.*;
+import java.time.ZonedDateTime;
 import java.util.*;
 
 @RestController
@@ -23,7 +26,6 @@ public class AdminManagementController {
     private final AttachmentMapper attachments;
     private final HelpdeskProperties props;
     private final RolePermissionService rolePermissions;
-    @Value("${helpdesk.dingtalk.sync-cron:0 0 2 * * ?}") private String contactCron;
     @GetMapping("/dictionary")
     @com.tzme.helpdesk.security.RequiresPermission("dict.manage")
     public ApiResponse<Map<String,Object>> dictionary() { var current=settings.get(); return ApiResponse.ok(Map.of("revision",current.getRevision(),"categories",current.getCategories(),"categoriesByType",current.getCategoriesByType())); }
@@ -46,9 +48,9 @@ public class AdminManagementController {
     @DeleteMapping("/departments/{id}") @com.tzme.helpdesk.security.RequiresPermission({"dept.manage"})
     public ApiResponse<Void> deleteDept(@PathVariable Long id) { service.deleteDept(id); return ApiResponse.ok(); }
     @GetMapping("/settings") @com.tzme.helpdesk.security.RequiresPermission({"settings.manage"})
-    public ApiResponse<RuntimeSettings> settings() { return ApiResponse.ok(settings.get()); }
+    public ApiResponse<ObjectNode> settings() { return ApiResponse.ok(settings.forClient(settings.get())); }
     @PutMapping("/settings") @com.tzme.helpdesk.security.RequiresPermission({"settings.manage"})
-    public ApiResponse<RuntimeSettings> saveSettings(@Valid @RequestBody RuntimeSettings req) { return ApiResponse.ok(settings.save(req)); }
+    public ApiResponse<ObjectNode> saveSettings(@Valid @RequestBody RuntimeSettings req) { return ApiResponse.ok(settings.forClient(settings.save(req))); }
     @PostMapping("/solution-codes") @com.tzme.helpdesk.security.RequiresPermission({"dict.manage"})
     public ApiResponse<SolutionCode> createCode(@Valid @RequestBody SolutionAdminReq req) { return ApiResponse.ok(service.saveSolution(null,req)); }
     @PutMapping("/solution-codes/{id}") @com.tzme.helpdesk.security.RequiresPermission({"dict.manage"})
@@ -67,9 +69,21 @@ public class AdminManagementController {
         result.put("type","本地磁盘"); result.put("directory",java.nio.file.Path.of(props.getUpload().getDir()).toAbsolutePath().normalize().toString());
         return ApiResponse.ok(result);
     }
-    @GetMapping("/jobs") @com.tzme.helpdesk.security.RequiresPermission({"settings.manage"})
-    public ApiResponse<Map<String,Object>> jobs() {
-        return ApiResponse.ok(Map.of("runs",management.jobs(),"slaCron","0 */10 * * * ?","contactCron",contactCron,"dingTalkEnabled",props.getDingtalk().isEnabled()));
+    @GetMapping("/jobs")
+    public ApiResponse<JobStatus> jobs() { return ApiResponse.ok(jobStatus(settings.jobs())); }
+    @PutMapping("/jobs")
+    public ApiResponse<JobStatus> saveJobs(@Valid @RequestBody JobSettings req) { return ApiResponse.ok(jobStatus(settings.saveJobs(req))); }
+
+    public record JobStatus(JobSettings settings, List<Map<String, Object>> runs, boolean dingTalkEnabled,
+                            String timezone, ZonedDateTime slaNextRun, ZonedDateTime contactNextRun, ZonedDateTime borrowDueNextRun) { }
+
+    private JobStatus jobStatus(JobSettings value) {
+        boolean enabled = props.getDingtalk().isEnabled();
+        ZonedDateTime now = ZonedDateTime.now(ScheduledJobs.ZONE);
+        return new JobStatus(value, management.jobs(), enabled, ScheduledJobs.ZONE.getId(),
+                ScheduledJobs.nextExecution(value.slaScanEnabled(), value.slaCron(), now),
+                ScheduledJobs.nextExecution(enabled && value.contactSyncEnabled(), value.contactCron(), now),
+                ScheduledJobs.nextExecution(true, BorrowDueJob.CRON, now));
     }
     @GetMapping("/permissions") @com.tzme.helpdesk.security.RequiresPermission({"role.manage"})
     public ApiResponse<Map<String,Object>> permissions() { return ApiResponse.ok(rolePermissions.describe()); }

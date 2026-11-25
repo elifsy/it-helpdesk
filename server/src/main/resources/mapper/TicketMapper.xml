@@ -5,10 +5,11 @@
   <insert id="insert" useGeneratedKeys="true" keyProperty="id">
     insert into it_ticket(no,title,description,type,cat1,cat2,category_note,impact,work_impact,priority,status,
       asset_no,creator_id,creator_name,dept_name,location,assignee_id,assignee_name,source,
-      kb_hit,tried_kb,due_at,finished_at,closed_at,solution_note)
+      kb_hit,tried_kb,due_at,finished_at,closed_at,solution_note,created_at,sla_calendar_json,response_due_at)
     values(#{no},#{title},#{description},#{type},#{cat1},#{cat2},#{categoryNote},#{impact},#{workImpact},#{priority},
       coalesce(#{status},'NEW'),#{assetNo},#{creatorId},#{creatorName},#{deptName},#{location},#{assigneeId},
-      #{assigneeName},#{source},#{kbHit},#{triedKb},#{dueAt},#{finishedAt},#{closedAt},#{solutionNote})
+      #{assigneeName},#{source},#{kbHit},#{triedKb},#{dueAt},#{finishedAt},#{closedAt},#{solutionNote},
+      coalesce(#{createdAt},now()),#{slaCalendarJson},#{responseDueAt})
   </insert>
 
   <select id="findByNo" resultType="com.tzme.helpdesk.domain.Ticket">
@@ -34,7 +35,12 @@
       <if test="acceptedAt != null">accepted_at = #{acceptedAt},</if>
       <if test="assignedAt != null">assigned_at = #{assignedAt},</if>
       <if test="dueAt != null">due_at = #{dueAt},</if>
-      <if test="finishedAt != null">finished_at = #{finishedAt},</if>
+      finished_at = #{finishedAt},
+      response_work_minutes = #{responseWorkMinutes},
+      resolve_work_minutes = #{resolveWorkMinutes},
+      sla_paused_at = #{slaPausedAt},
+      sla_paused_seconds = #{slaPausedSeconds},
+      sla_reminded_at = #{slaRemindedAt},
       <if test="closedAt != null">closed_at = #{closedAt},</if>
       updated_at = now()
     </set>
@@ -48,8 +54,8 @@
           and status in ('ACCEPTED','IN_PROGRESS','PENDING_USER','PENDING_VENDOR')
         </when>
         <when test="status == 'OVERDUE'">
-          and status not in ('CLOSED','REJECTED','CANCELLED')
-          and due_at is not null and due_at &lt; now()
+          and status not in ('PENDING_CONFIRM','CLOSED','REJECTED','CANCELLED')
+          and sla_paused_at is null and <include refid="activeDeadline"/> &lt; now()
         </when>
         <otherwise>
           <if test="status != null and status != ''">and status = #{status}</if>
@@ -111,11 +117,41 @@
 
   <select id="findTimeout" resultType="com.tzme.helpdesk.domain.Ticket">
     select * from it_ticket
-    where status not in ('CLOSED','REJECTED','CANCELLED')
-      and due_at is not null and due_at &lt; now()
-    order by due_at asc
+    where <include refid="timeoutReminderFilter"/>
+    order by coalesce(sla_reminded_at, due_at), id
     limit #{limit}
   </select>
+
+  <sql id="timeoutReminderFilter">
+    status not in ('PENDING_CONFIRM','CLOSED','REJECTED','CANCELLED')
+    and sla_paused_at is null and <include refid="activeDeadline"/> &lt;= #{now}
+    and (sla_reminded_at is null or sla_reminded_at &lt;= #{before})
+  </sql>
+
+  <sql id="activeDeadline">
+    (case when accepted_at is null and response_due_at is not null and (due_at is null or response_due_at &lt; due_at)
+          then response_due_at else due_at end)
+  </sql>
+
+  <sql id="confirmationReminderFilter">
+    status = 'PENDING_CONFIRM' and finished_at &lt;= #{before}
+    and (confirmation_reminded_at is null or confirmation_reminded_at &lt;= #{before})
+  </sql>
+
+  <select id="findConfirmationReminders" resultType="com.tzme.helpdesk.domain.Ticket">
+    select * from it_ticket where <include refid="confirmationReminderFilter"/>
+    order by coalesce(confirmation_reminded_at, finished_at), id limit #{limit}
+  </select>
+
+  <update id="markTimeoutReminder">
+    update it_ticket set sla_reminded_at=#{now}, updated_at=updated_at
+    where no=#{no} and <include refid="timeoutReminderFilter"/>
+  </update>
+
+  <update id="markConfirmationReminder">
+    update it_ticket set confirmation_reminded_at=#{now}, updated_at=updated_at
+    where no=#{no} and <include refid="confirmationReminderFilter"/>
+  </update>
 
   <resultMap id="overviewResult" type="java.util.LinkedHashMap" autoMapping="false">
     <result column="total" property="total"/>
@@ -129,6 +165,10 @@
     <result column="avgMinutes" property="avgMinutes"/>
     <result column="slaOk" property="slaOk"/>
     <result column="slaTotal" property="slaTotal"/>
+    <result column="avgResponseMinutes" property="avgResponseMinutes"/>
+    <result column="responseCount" property="responseCount"/>
+    <result column="responseSlaOk" property="responseSlaOk"/>
+    <result column="responseSlaTotal" property="responseSlaTotal"/>
     <result column="triedKbCount" property="triedKbCount"/>
   </resultMap>
 
@@ -139,11 +179,15 @@
       coalesce(sum(case when status = 'CLOSED' then 1 else 0 end),0) as `closedCount`,
       coalesce(sum(case when status = 'NEW' then 1 else 0 end),0) as `pendingAccept`,
       coalesce(sum(case when status in ('ACCEPTED','IN_PROGRESS','PENDING_USER','PENDING_VENDOR') then 1 else 0 end),0) as `processing`,
-      coalesce(sum(case when status not in ('CLOSED','REJECTED','CANCELLED') and due_at is not null and due_at &lt; now() then 1 else 0 end),0) as `overdueCount`,
+      coalesce(sum(case when status not in ('PENDING_CONFIRM','CLOSED','REJECTED','CANCELLED') and sla_paused_at is null and <include refid="activeDeadline"/> &lt; now() then 1 else 0 end),0) as `overdueCount`,
       coalesce(round(avg(case when rating &gt; 0 then rating end), 2),0) as `avgRating`,
       coalesce(sum(case when rating &gt; 0 then 1 else 0 end),0) as `ratedCount`,
       coalesce(round(avg(case when finished_at is not null and (source is null or source != '紧急处理补报')
-        then timestampdiff(minute, created_at, finished_at) end), 0),0) as `avgMinutes`,
+        then coalesce(resolve_work_minutes,timestampdiff(minute, created_at, finished_at)) end), 0),0) as `avgMinutes`,
+      coalesce(round(avg(case when accepted_at is not null then coalesce(response_work_minutes,timestampdiff(minute,created_at,accepted_at)) end),0),0) as `avgResponseMinutes`,
+      count(accepted_at) as `responseCount`,
+      coalesce(sum(case when accepted_at is not null and response_due_at is not null and accepted_at &lt;= response_due_at then 1 else 0 end),0) as `responseSlaOk`,
+      coalesce(sum(case when accepted_at is not null and response_due_at is not null then 1 else 0 end),0) as `responseSlaTotal`,
       coalesce(sum(case when finished_at is not null and due_at is not null and finished_at &lt;= due_at then 1 else 0 end),0) as `slaOk`,
       coalesce(sum(case when finished_at is not null and due_at is not null then 1 else 0 end),0) as `slaTotal`,
       coalesce(sum(case when tried_kb = 1 then 1 else 0 end),0) as `triedKbCount`
@@ -170,7 +214,9 @@
     select assignee_name as `name`, count(*) as `total`,
       coalesce(round(avg(case when rating &gt; 0 then rating end), 2), 0) as `rating`,
       coalesce(round(avg(case when finished_at is not null and (source is null or source != '紧急处理补报')
-        then timestampdiff(minute, created_at, finished_at) end), 0), 0) as `avgMinutes`
+        then coalesce(resolve_work_minutes,timestampdiff(minute, created_at, finished_at)) end), 0), 0) as `avgMinutes`,
+      coalesce(round(avg(case when accepted_at is not null then coalesce(response_work_minutes,timestampdiff(minute,created_at,accepted_at)) end),0),0) as `avgResponseMinutes`,
+      count(accepted_at) as `responseCount`, count(finished_at) as `resolvedCount`
     from it_ticket
     where assignee_name is not null and assignee_name &lt;&gt; ''
       and created_at &gt;= #{since}

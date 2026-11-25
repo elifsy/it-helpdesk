@@ -10,6 +10,7 @@
   <update id="update">
     update it_purchase_request
     <set>
+      <if test="applicantId != null">applicant_id = #{applicantId},</if>
       <if test="status != null">status = #{status},</if>
       <if test="approver != null">approver = #{approver},</if>
       <if test="handledAt != null">handled_at = #{handledAt},</if>
@@ -47,7 +48,11 @@
     from it_purchase_request r left join it_asset a on a.no = r.asset_no
     <where>
       <if test="status != null and status != ''">and r.status = #{status}</if>
-      <if test="mine">and r.applicant = #{applicant}</if>
+      <if test="no != null and no != ''">and r.no = #{no}</if>
+      <if test="mine">
+        and (r.applicant_id = #{applicantId} or (r.applicant_id is null and r.applicant = #{applicant}
+             and (select count(*) from sys_user u where u.name = r.applicant) = 1))
+      </if>
     </where>
     order by case r.status
                when 'PENDING' then 0

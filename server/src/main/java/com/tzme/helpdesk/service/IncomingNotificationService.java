@@ -3,6 +3,7 @@ package com.tzme.helpdesk.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tzme.helpdesk.common.BizException;
+import com.tzme.helpdesk.common.PersonSearch;
 import com.tzme.helpdesk.domain.Ticket;
 import com.tzme.helpdesk.domain.User;
 import com.tzme.helpdesk.dto.IncomingNotificationRules;
@@ -14,9 +15,7 @@ import com.tzme.helpdesk.security.Roles;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.util.UriUtils;
 
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -31,10 +30,10 @@ public class IncomingNotificationService {
     private final RuntimeSettingsService settings;
     private final AuditService audit;
     private final NotifyService notify;
-    private final DingTalkService dingTalk;
     private final ObjectMapper json;
 
-    public record Recipient(Long id, String name, String department, String employeeNo, String role) { }
+    public record Recipient(Long id, String name, String department, String employeeNo, String role,
+                            List<List<String>> namePinyin) { }
     public record Config(IncomingNotificationRules rules, Map<String, Map<String, List<String>>> categories,
                          List<Recipient> recipients) { }
     private record CategoryKey(String type, String cat1, String cat2) { }
@@ -89,6 +88,17 @@ public class IncomingNotificationService {
     }
 
     public void newTicket(Ticket ticket) {
+        toTicketDesk(ticket, NotifyService.NEW_TICKET, "收到新的报修工单 " + ticket.getNo(), "TICKET");
+    }
+
+    public void remindUnassignedTicket(Ticket ticket, String title) {
+        boolean response = ticket.getAcceptedAt() == null && ticket.getResponseDueAt() != null
+                && (ticket.getDueAt() == null || !ticket.getResponseDueAt().isAfter(ticket.getDueAt()));
+        String target = response ? "首次响应" : "解决";
+        toTicketDesk(ticket, title, ticket.getNo() + " 已超过" + target + "时限，请尽快受理。", "SLA");
+    }
+
+    private void toTicketDesk(Ticket ticket, String title, String content, String kind) {
         var rules = read(management.setting(KEY)).ticketRules();
         List<Long> exact = List.of(), parent = List.of();
         for (TicketRule rule : rules) {
@@ -96,43 +106,24 @@ public class IncomingNotificationService {
             if (rule.cat2() == null) parent = rule.recipientIds();
             else if (rule.cat2().equals(ticket.getCat2())) exact = rule.recipientIds();
         }
-        String title = "新工单待受理";
-        String content = "收到新的报修工单 " + ticket.getNo();
-        String link = ticketLink(ticket.getNo());
-        if (sendTo(exact, title, content, "TICKET", ticket.getNo(), link)
-                || sendTo(parent, title, content, "TICKET", ticket.getNo(), link)) return;
+        if (sendTo(exact, title, content, kind, ticket.getNo())
+                || sendTo(parent, title, content, kind, ticket.getNo())) return;
         notify.notifyIncoming("ticket.accept", title,
-                ticket.getNo() + " " + ticket.getTitle() + "（" + ticket.getPriority() + "）", "TICKET", ticket.getNo(), link);
-    }
-
-    private String ticketLink(String ticketNo) {
-        if (!dingTalk.enabled()) return null;
-        String baseUrl = settings.get().getQrcodeBaseUrl();
-        if (baseUrl == null) return null;
-        URI base;
-        try {
-            base = URI.create(baseUrl);
-        } catch (IllegalArgumentException ignored) {
-            return null;
-        }
-        if (!("http".equals(base.getScheme()) || "https".equals(base.getScheme())) || base.getHost() == null
-                || base.getUserInfo() != null || base.getRawQuery() != null || base.getRawFragment() != null) return null;
-        String entry = base.toASCIIString();
-        if (!entry.endsWith("/")) entry += "/";
-        return dingTalk.workAppLink(entry + "?ticket=" + UriUtils.encode(ticketNo, StandardCharsets.UTF_8));
+                "TICKET".equals(kind) ? ticket.getNo() + " " + ticket.getTitle() + "（" + ticket.getPriority() + "）" : content,
+                kind, ticket.getNo());
     }
 
     public void newAssetRequest(String type, String label, String no, String assetName, String applicant, boolean dingStarted) {
         var ids = read(management.setting(KEY)).assetRecipients().getOrDefault(type, List.of());
-        String title = "有新的资产申请";
+        String title = NotifyService.NEW_ASSET;
         String channel = dingStarted ? "已进入钉钉审批" : "等待系统内审批";
-        String content = no + " " + label + " · " + channel + "，请打开 IT 服务台查看。";
-        if (sendTo(ids, title, content, "ASSET", no, null) || dingStarted) return;
+        String content = no + " " + label + " · " + channel;
+        if (sendTo(ids, title, content, "ASSET", no) || dingStarted) return;
         notify.notifyIncoming("request.approve", title, no + " " + label + " · " + assetName
-                + "（" + applicant + "）", "ASSET", no, null);
+                + "（" + applicant + "）", "ASSET", no);
     }
 
-    private boolean sendTo(List<Long> ids, String title, String content, String kind, String no, String link) {
+    private boolean sendTo(List<Long> ids, String title, String content, String kind, String no) {
         var recipients = new ArrayList<User>();
         var dingUserIds = new HashSet<String>();
         for (Long id : ids) {
@@ -140,7 +131,7 @@ public class IncomingNotificationService {
             if (canReceive(user) && dingUserIds.add(user.getDingUserId())) recipients.add(user);
         }
         if (recipients.isEmpty()) return false;
-        notify.sendToAccounts(recipients, title, content, kind, no, link);
+        notify.sendToAccounts(recipients, title, content, kind, no);
         return true;
     }
 
@@ -153,7 +144,7 @@ public class IncomingNotificationService {
     private List<Recipient> eligibleRecipients() {
         return users.listActiveWithDing().stream().filter(this::canReceive)
                 .map(user -> new Recipient(user.getId(), user.getName(), user.getDeptName(), user.getEmployeeNo(),
-                        Roles.normalize(user.getRole())))
+                        Roles.normalize(user.getRole()), PersonSearch.namePinyin(user.getName())))
                 .sorted(Comparator.comparing(Recipient::name).thenComparing(Recipient::id))
                 .toList();
     }

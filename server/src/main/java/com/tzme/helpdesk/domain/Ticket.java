@@ -37,6 +37,16 @@ public class Ticket {
     private LocalDateTime acceptedAt;
     private LocalDateTime assignedAt;
     private LocalDateTime dueAt;
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private String slaCalendarJson;
+    private LocalDateTime responseDueAt;
+    private Long responseWorkMinutes;
+    private Long resolveWorkMinutes;
+    private LocalDateTime slaPausedAt;
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private Long slaPausedSeconds;
+    private LocalDateTime slaRemindedAt;
+    private LocalDateTime confirmationRemindedAt;
     private LocalDateTime finishedAt;
     private LocalDateTime closedAt;
     private LocalDateTime updatedAt;
@@ -48,4 +58,6 @@ public class Ticket {
     /** 非表字段：同一 IT 的处理队列中排在本单之前的未完成工单数。未派单或已处理完成时为空。 */
     private Long queueAhead;
     private Long pendingReportCount;
+
+    public boolean isWorkTime() { return slaCalendarJson != null; }
 }

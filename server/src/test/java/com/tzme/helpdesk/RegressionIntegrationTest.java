@@ -47,6 +47,7 @@ class RegressionIntegrationTest {
     @Autowired AssetRequestService requests;
     @Autowired TicketService ticketService;
     @Autowired AssetService assetService;
+    @Autowired BorrowDueService borrowDueService;
     @Autowired javax.sql.DataSource dataSource;
     @MockBean SlaScanJob slaJob;
     @MockBean ContactSyncJob contactJob;
@@ -67,6 +68,67 @@ class RegressionIntegrationTest {
         return body(mvc.perform(multipart("/attachments").file(file()).param("bizType","TICKET").param("bizNo","IT-TEST-0001").header("Authorization","Bearer "+token)));
     }
     JsonNode settings(String token) throws Exception { return body(mvc.perform(get("/admin/manage/settings").header("Authorization","Bearer "+token))); }
+
+    @Test void onlySuperAdminsCanChangeBadgeTitlesAndManageOtherSuperAdmins() throws Exception {
+        String admin = login("陈静"), it = login("李强"), employee = login("张伟"), superAdmin = login("王敏");
+        db.update("update sys_user set role='SUPER_ADMIN' where id=5");
+        String titles = "/account/badge/titles";
+        String off = "{\"enabled\":false}";
+        for (String token : List.of(admin, it, employee)) {
+            mvc.perform(get(titles).header("Authorization", "Bearer " + token)).andExpect(status().isForbidden());
+            mvc.perform(put(titles).contentType("application/json").content(off).header("Authorization", "Bearer " + token))
+                    .andExpect(status().isForbidden());
+        }
+        assertTrue(body(mvc.perform(get(titles).header("Authorization", "Bearer " + superAdmin))).path("enabled").asBoolean());
+        var me = body(mvc.perform(get("/auth/me").header("Authorization", "Bearer " + superAdmin)));
+        assertEquals("SUPER_ADMIN", me.path("role").asText());
+        assertTrue(me.path("permissions").toString().contains("role.manage"));
+        String promotion = "{\"role\":\"SUPER_ADMIN\",\"status\":\"ACTIVE\",\"deptId\":1}";
+        String demotion = "{\"role\":\"ADMIN\",\"status\":\"ACTIVE\",\"deptId\":1}";
+        mvc.perform(put("/admin/manage/users/4").contentType("application/json").content(promotion)
+                .header("Authorization","Bearer "+admin)).andExpect(status().isForbidden());
+        mvc.perform(put("/admin/manage/users/5").contentType("application/json").content(demotion)
+                .header("Authorization","Bearer "+admin)).andExpect(status().isForbidden());
+        mvc.perform(put("/admin/manage/users/5").contentType("application/json").content(demotion)
+                .header("Authorization","Bearer "+superAdmin)).andExpect(status().isBadRequest());
+        assertEquals("SUPER_ADMIN", body(mvc.perform(put("/admin/manage/users/4").contentType("application/json")
+                .content(promotion).header("Authorization","Bearer "+superAdmin))).path("role").asText());
+        assertFalse(body(mvc.perform(put(titles).contentType("application/json").content(off)
+                .header("Authorization", "Bearer " + superAdmin))).path("enabled").asBoolean());
+        var disabledBadge = body(mvc.perform(get("/account/badge").header("Authorization","Bearer "+it)));
+        assertFalse(disabledBadge.hasNonNull("title"));
+        assertFalse(disabledBadge.hasNonNull("nextTitleAt"));
+        assertEquals(1, db.queryForObject("select count(*) from sys_audit_log where action='BADGE_TITLES_UPDATE'", Integer.class));
+        assertTrue(body(mvc.perform(put(titles).contentType("application/json").content("{\"enabled\":true}")
+                .header("Authorization", "Bearer " + superAdmin))).path("enabled").asBoolean());
+        var enabledBadge = body(mvc.perform(get("/account/badge").header("Authorization","Bearer "+it)));
+        assertEquals("桌面卫士", enabledBadge.path("title").asText());
+        assertEquals("故障猎手", enabledBadge.path("nextTitle").asText());
+        assertEquals(30, enabledBadge.path("nextTitleAt").asInt());
+    }
+
+    @Test void badgeDefaultsToDingTalkAndCountsDistinctAcceptedTicketsForTheCurrentEngineer() throws Exception {
+        String it = login("李强"), employee = login("张伟");
+        for (int n = 0; n < 29; n++) {
+            db.update("insert into it_ticket_event(ticket_no,action,operator,operator_id) values(?,'ACCEPT','历史姓名',4)", "BADGE-"+n);
+        }
+        db.update("insert into it_ticket_event(ticket_no,action,operator,operator_id) values('BADGE-1','ACCEPT','李强',4),('BADGE-USER','DISPATCH','李强',4)");
+        db.update("insert into it_ticket_event(ticket_no,action,operator) values('BADGE-LEGACY','ACCEPT','李强')");
+        var badge = body(mvc.perform(get("/account/badge").header("Authorization","Bearer "+it)));
+        assertEquals("DINGTALK", badge.path("avatarSource").asText());
+        assertEquals(30, badge.path("acceptedTickets").asInt());
+        assertEquals("jade", badge.path("titleKey").asText());
+        assertEquals("故障猎手", badge.path("title").asText());
+        assertEquals("排障专家", badge.path("nextTitle").asText());
+        assertEquals(100, badge.path("nextTitleAt").asInt());
+        assertEquals("VIRTUAL", body(mvc.perform(put("/account/badge/avatar").contentType("application/json")
+                .content("{\"source\":\"VIRTUAL\"}").header("Authorization","Bearer "+it))).path("avatarSource").asText());
+        assertEquals("VIRTUAL", body(mvc.perform(get("/account/badge").header("Authorization","Bearer "+it))).path("avatarSource").asText());
+        var employeeBadge = body(mvc.perform(get("/account/badge").header("Authorization","Bearer "+employee)));
+        assertEquals("DINGTALK", employeeBadge.path("avatarSource").asText());
+        assertFalse(employeeBadge.hasNonNull("title"));
+        assertFalse(employeeBadge.hasNonNull("nextTitleAt"));
+    }
 
     @Test void completedEmergencyReportsRestrictNewRequestsAndCanBeSupplementedOrCancelled() throws Exception {
         String owner = login("张伟"), it = login("李强"), admin = login("陈静"), other = login("普通用户乙");
@@ -229,8 +291,9 @@ class RegressionIntegrationTest {
         for (var entry : recipients.entrySet()) {
             String type = entry.getKey(), no = "TEST-" + type;
             String state = switch (type) { case "REPLACE" -> "在用"; case "RETURN" -> "借出中"; default -> "闲置"; };
-            db.update("insert into it_asset(no,name,category,status,user_name,borrower) values(?,?,'终端',?,?,?)",
-                    no, "通知测试设备", state, "REPLACE".equals(type) ? "张伟" : null, "RETURN".equals(type) ? "张伟" : null);
+            db.update("insert into it_asset(no,name,category,status,user_name,borrower,user_id,borrower_id) values(?,?,'终端',?,?,?,?,?)",
+                    no, "通知测试设备", state, "REPLACE".equals(type) ? "张伟" : null, "RETURN".equals(type) ? "张伟" : null,
+                    "REPLACE".equals(type) ? 1L : null, "RETURN".equals(type) ? 1L : null);
             ObjectNode request = json.createObjectNode().put("type",type).put("assetNo",no).put("reason","来单通知回归");
             if ("BORROW".equals(type)) request.put("expectReturn", java.time.LocalDate.now().plusDays(1).toString());
             if ("REPLACE".equals(type)) request.put("newAssetNo", "ASSET-TEST-2");
@@ -243,7 +306,7 @@ class RegressionIntegrationTest {
         }
 
         db.update("update sys_user set role='VIEWER' where id=6");
-        db.update("insert into it_asset(no,name,category,status,borrower) values('TEST-RETURN-2','通知测试设备','终端','借出中','张伟')");
+        db.update("insert into it_asset(no,name,category,status,borrower,borrower_id) values('TEST-RETURN-2','通知测试设备','终端','借出中','张伟',1)");
         JsonNode fallback = body(mvc.perform(post("/asset-requests").contentType("application/json")
                 .content("{\"type\":\"RETURN\",\"assetNo\":\"TEST-RETURN-2\",\"reason\":\"已解绑原接收角色\"}")
                 .header("Authorization","Bearer "+owner)));
@@ -544,7 +607,7 @@ class RegressionIntegrationTest {
     }
 
     @Test void assetStatisticDetailsMatchExactStatesAndRespectReadPermissions() throws Exception {
-        db.update("update it_asset set status='在用',user_name='张伟' where no='ASSET-TEST-1'");
+        db.update("update it_asset set status='在用',user_name='张伟',user_id=1 where no='ASSET-TEST-1'");
         String viewer = login("赵敏"), admin = login("陈静");
         JsonNode overview = body(mvc.perform(get("/stats/overview").header("Authorization", "Bearer " + viewer)));
         assertEquals(overview.get("assetTotal").asInt(), body(mvc.perform(get("/assets").header("Authorization", "Bearer " + viewer))).size());
@@ -806,10 +869,10 @@ class RegressionIntegrationTest {
         db.update("insert into it_ticket(no,title,description,cat1,creator_id,creator_name,status) values('KPI-NO-DUE','没有时限','无时限回归','终端',1,'张伟','NEW')");
         String admin = login("陈静");
         JsonNode result = body(mvc.perform(get("/tickets").param("status", "OVERDUE").header("Authorization", "Bearer " + admin)));
-        assertEquals(7, result.get("total").asInt());
+        assertEquals(6, result.get("total").asInt());
         result.get("list").forEach(ticket -> {
             assertTrue(ticket.get("overdue").asBoolean());
-            assertFalse(List.of("CLOSED", "REJECTED", "CANCELLED").contains(ticket.get("status").asText()));
+            assertFalse(List.of("PENDING_CONFIRM", "CLOSED", "REJECTED", "CANCELLED").contains(ticket.get("status").asText()));
             assertNotEquals("KPI-NO-DUE", ticket.get("no").asText());
             assertNotEquals("IT-TEST-0001", ticket.get("no").asText());
         });
@@ -831,7 +894,7 @@ class RegressionIntegrationTest {
         }
         assertEquals(5, body(mvc.perform(get("/tickets").param("status", "PROCESSING")
                 .header("Authorization", "Bearer " + viewer))).get("total").asInt());
-        assertEquals(6, body(mvc.perform(get("/tickets").param("status", "OVERDUE")
+        assertEquals(5, body(mvc.perform(get("/tickets").param("status", "OVERDUE")
                 .header("Authorization", "Bearer " + viewer))).get("total").asInt());
     }
 
@@ -900,15 +963,15 @@ class RegressionIntegrationTest {
 
     @Test void returnsClearDueDateAndReplacementRechecksOwnership() throws Exception {
         String admin=login("陈静");
-        db.update("update it_asset set status='借出中',borrower='张伟',borrow_due=current_date where no='ASSET-TEST-1'");
+        db.update("update it_asset set status='借出中',borrower='张伟',borrower_id=1,borrow_due=current_date where no='ASSET-TEST-1'");
         db.update("update it_asset_request set type='RETURN' where id=1");
         mvc.perform(post("/asset-requests/1/approve").contentType("application/json").content("{}").header("Authorization","Bearer "+admin)).andExpect(status().isOk());
         assertNull(db.queryForObject("select borrow_due from it_asset where no='ASSET-TEST-1'",java.sql.Date.class));
         assertEquals("闲置",db.queryForObject("select status from it_asset where no='ASSET-TEST-1'",String.class));
-        db.update("update it_asset set status='在用',user_name='赵敏' where no='ASSET-TEST-1'");
+        db.update("update it_asset set status='在用',user_name='赵敏',user_id=2 where no='ASSET-TEST-1'");
         db.update("update it_asset_request set type='REPLACE' where id=2");
         mvc.perform(post("/asset-requests/2/approve").contentType("application/json").content("{\"newAssetNo\":\"ASSET-TEST-1\"}").header("Authorization","Bearer "+admin)).andExpect(status().isBadRequest());
-        db.update("update it_asset set user_name='张伟' where no='ASSET-TEST-1'");
+        db.update("update it_asset set user_name='张伟',user_id=1 where no='ASSET-TEST-1'");
         mvc.perform(post("/asset-requests/2/approve").contentType("application/json").content("{\"newAssetNo\":\"ASSET-TEST-2\"}").header("Authorization","Bearer "+admin)).andExpect(status().isBadRequest());
         assertEquals("闲置",db.queryForObject("select status from it_asset where no='ASSET-TEST-2'",String.class));
     }
@@ -925,9 +988,176 @@ class RegressionIntegrationTest {
         mvc.perform(put("/admin/manage/settings").contentType("application/json").content(invalid.toString()).header("Authorization","Bearer "+admin)).andExpect(status().isBadRequest());
         JsonNode t=body(mvc.perform(post("/tickets").contentType("application/json").content("{\"title\":\"安全事件测试\",\"description\":\"回归测试信息安全\",\"location\":\"A座3楼测试区\",\"cat1\":\"信息安全\",\"impact\":\"SELF\",\"workImpact\":\"SLOW\"}").header("Authorization","Bearer "+employee)));
         assertEquals("P1",t.get("priority").asText());
-        assertEquals(120,db.queryForObject("select timestampdiff(minute,created_at,due_at) from it_ticket where no=?",Integer.class,t.get("no").asText()));
+        var savedTicket = ticketService.requireTicket(t.get("no").asText());
+        var clock = new com.tzme.helpdesk.support.SlaWorkTime(SlaCalendar.defaults());
+        assertEquals(7200, clock.between(savedTicket.getCreatedAt(), savedTicket.getDueAt()));
+        assertEquals(3600, clock.between(savedTicket.getCreatedAt(), savedTicket.getResponseDueAt()));
         upload(employee);
         mvc.perform(multipart("/attachments").file(file()).param("bizType","TICKET").param("bizNo","IT-TEST-0001").header("Authorization","Bearer "+employee)).andExpect(status().isBadRequest());
+    }
+
+    @Test void onlySuperAdminsCanConfigureJobsAndSavedSchedulesTakeEffect() throws Exception {
+        String admin = login("陈静"), employee = login("张伟");
+        db.update("update sys_user set role='SUPER_ADMIN' where id=5");
+        String superAdmin = login("王敏");
+        String url = "/admin/manage/jobs";
+        db.update("insert into sys_setting(setting_key,setting_value) values('runtime',?)",
+                "{\"revision\":3,\"slaScanEnabled\":false}");
+        mvc.perform(get(url).header("Authorization", "Bearer " + admin)).andExpect(status().isForbidden());
+        mvc.perform(get(url).header("Authorization", "Bearer " + employee)).andExpect(status().isForbidden());
+        JsonNode status = body(mvc.perform(get(url).header("Authorization", "Bearer " + superAdmin)));
+        ObjectNode draft = (ObjectNode) status.get("settings");
+        assertFalse(draft.path("slaScanEnabled").asBoolean());
+        assertEquals(JobSettings.DEFAULT_SLA_CRON, draft.path("slaCron").asText());
+        assertEquals(JobSettings.DEFAULT_CONTACT_CRON, draft.path("contactCron").asText());
+        assertEquals("Asia/Shanghai", status.path("timezone").asText());
+        assertFalse(status.hasNonNull("contactNextRun"));
+        draft.put("slaScanEnabled", true).put("slaCron", "0   */5 * * * ?").put("contactCron", "0 30 3 * * ?")
+                .put("slaReminderHours", 2).put("confirmationReminderHours", 18);
+        mvc.perform(put(url).contentType("application/json").content(draft.toString()).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isForbidden());
+        ObjectNode invalid = draft.deepCopy().put("contactCron", "0 0 25 * * ?");
+        mvc.perform(put(url).contentType("application/json").content(invalid.toString()).header("Authorization", "Bearer " + superAdmin))
+                .andExpect(status().isBadRequest());
+        JsonNode updated = body(mvc.perform(put(url).contentType("application/json").content(draft.toString()).header("Authorization", "Bearer " + superAdmin)));
+        assertEquals("0 */5 * * * ?", updated.path("settings").path("slaCron").asText());
+        assertEquals(2, updated.path("settings").path("slaReminderHours").asInt());
+        assertEquals(18, updated.path("settings").path("confirmationReminderHours").asInt());
+        assertTrue(updated.hasNonNull("slaNextRun"));
+        mvc.perform(put(url).contentType("application/json").content(draft.toString()).header("Authorization", "Bearer " + superAdmin))
+                .andExpect(status().isConflict());
+
+        ObjectNode general = (ObjectNode) settings(admin);
+        for (String field : List.of("slaCron", "contactCron", "slaScanEnabled", "contactSyncEnabled", "slaReminderHours", "confirmationReminderHours"))
+            assertFalse(general.has(field));
+        general.put("slaScanEnabled", false).put("slaCron", "0 0 1 * * ?").put("contactSyncEnabled", false)
+                .put("slaReminderHours", 9).put("confirmationReminderHours", 8);
+        body(mvc.perform(put("/admin/manage/settings").contentType("application/json").content(general.toString()).header("Authorization", "Bearer " + admin)));
+        ObjectNode saved = (ObjectNode) body(mvc.perform(get(url).header("Authorization", "Bearer " + superAdmin))).path("settings");
+        assertTrue(saved.path("slaScanEnabled").asBoolean());
+        assertTrue(saved.path("contactSyncEnabled").asBoolean());
+        assertEquals("0 */5 * * * ?", saved.path("slaCron").asText());
+        assertEquals("0 30 3 * * ?", saved.path("contactCron").asText());
+        assertEquals(2, saved.path("slaReminderHours").asInt());
+        assertEquals(18, saved.path("confirmationReminderHours").asInt());
+
+        CountDownLatch scanStarted = new CountDownLatch(1);
+        org.mockito.Mockito.doAnswer(invocation -> { scanStarted.countDown(); return null; }).when(slaJob).scan();
+        saved.put("slaCron", "* * * * * ?");
+        JsonNode running = body(mvc.perform(put(url).contentType("application/json").content(saved.toString()).header("Authorization", "Bearer " + superAdmin)));
+        assertTrue(scanStarted.await(5, TimeUnit.SECONDS), "The newly saved schedule should trigger a scan");
+        ObjectNode turnOff = (ObjectNode) running.path("settings");
+        turnOff.put("slaScanEnabled", false);
+        JsonNode disabled = body(mvc.perform(put(url).contentType("application/json").content(turnOff.toString()).header("Authorization", "Bearer " + superAdmin)));
+        assertFalse(disabled.hasNonNull("slaNextRun"));
+    }
+
+    @Test void scheduledTicketRemindersDeduplicateAndNotifyEachWorkflowRecipient() throws Exception {
+        var now = java.time.LocalDateTime.now();
+        db.update("update it_ticket set due_at=? where no='IT-TEST-0001'", now.minusHours(10));
+        db.update("insert into it_ticket(no,title,description,status,creator_id,creator_name,cat1,due_at) "
+                + "values('IT-SLA-DESK','待受理超时','提醒测试','NEW',1,'张伟','其他',?)", now.minusHours(9));
+        db.update("insert into it_ticket(no,title,description,status,creator_id,creator_name,assignee_id,assignee_name,cat1,due_at,finished_at) "
+                + "values('IT-SLA-CONFIRM','等待确认','提醒测试','PENDING_CONFIRM',1,'张伟',4,'李强','其他',?,?)",
+                now.minusHours(30), now.minusHours(29));
+        var workers = Executors.newFixedThreadPool(2);
+        try {
+            var scans = workers.invokeAll(List.of(ticketService::scanTimeout, ticketService::scanTimeout), 10, TimeUnit.SECONDS);
+            assertEquals(3, (int) scans.get(0).get() + (int) scans.get(1).get());
+        } finally {
+            workers.shutdownNow();
+        }
+        assertEquals(0, ticketService.scanTimeout());
+        assertEquals(List.of(4L), notificationRecipients("IT-TEST-0001", "工单已超时"));
+        assertEquals(List.of(3L, 4L, 5L), notificationRecipients("IT-SLA-DESK", "未接单工单已超时"));
+        assertEquals(List.of(1L), notificationRecipients("IT-SLA-CONFIRM", "工单待确认提醒"));
+        assertTrue(notificationRecipients("IT-SLA-CONFIRM", "工单已超时").isEmpty());
+        db.update("update it_ticket set sla_reminded_at=? where no='IT-TEST-0001'", now.minusHours(5));
+        assertEquals(1, ticketService.scanTimeout());
+        assertEquals(List.of(4L), notificationRecipients("IT-TEST-0001", "超时工单催办"));
+        assertEquals(0, ticketService.scanTimeout());
+        String it = login("李强");
+        var overdue = body(mvc.perform(get("/tickets").param("status", "OVERDUE").header("Authorization", "Bearer " + it)));
+        assertFalse(overdue.path("list").toString().contains("IT-SLA-CONFIRM"));
+    }
+
+    @Test void ticketInformationRequestsPauseTheWorkingClockUntilTheReporterReplies() throws Exception {
+        String employee = login("张伟"), engineer = login("李强"), unrelated = login("普通用户乙");
+        String payload = "{\"title\":\"停表测试\",\"description\":\"测试工作时间和补充信息\",\"location\":\"A座3楼\",\"cat1\":\"信息安全\"}";
+        var submitted = body(mvc.perform(post("/tickets").contentType("application/json").content(payload)
+                .header("Authorization", "Bearer " + employee)));
+        String no = submitted.path("no").asText();
+        assertTrue(submitted.path("workTime").asBoolean());
+        var initialDue = ticketService.requireTicket(no).getDueAt();
+        var accepted = body(mvc.perform(post("/tickets/" + no + "/accept").header("Authorization", "Bearer " + engineer)));
+        assertTrue(accepted.hasNonNull("responseWorkMinutes"));
+        var paused = body(mvc.perform(post("/tickets/" + no + "/request-info").contentType("application/json")
+                .content("{\"note\":\"请补充错误截图\"}").header("Authorization", "Bearer " + engineer)));
+        assertEquals("PENDING_USER", paused.path("status").asText());
+        assertTrue(paused.hasNonNull("slaPausedAt"));
+        db.update("update it_ticket set sla_paused_at=? where no=?", java.time.LocalDateTime.now().minusDays(7), no);
+        String reply = "{\"note\":\"已说明复现步骤\"}";
+        mvc.perform(post("/tickets/" + no + "/provide-info").contentType("application/json").content(reply)
+                .header("Authorization", "Bearer " + unrelated)).andExpect(status().isForbidden());
+        var resumed = body(mvc.perform(post("/tickets/" + no + "/provide-info").contentType("application/json").content(reply)
+                .header("Authorization", "Bearer " + employee)));
+        assertEquals("IN_PROGRESS", resumed.path("status").asText());
+        assertFalse(resumed.hasNonNull("slaPausedAt"));
+        var ticket = ticketService.requireTicket(no);
+        var clock = new com.tzme.helpdesk.support.SlaWorkTime(SlaCalendar.defaults());
+        assertTrue(ticket.getSlaPausedSeconds() > 0);
+        assertEquals(clock.add(initialDue, ticket.getSlaPausedSeconds()), ticket.getDueAt());
+        var solved = body(mvc.perform(post("/tickets/" + no + "/finish").contentType("application/json")
+                .content("{\"cat1\":\"信息安全\",\"note\":\"已完成测试处理\"}").header("Authorization", "Bearer " + engineer)));
+        assertTrue(solved.hasNonNull("resolveWorkMinutes"));
+        var overview = body(mvc.perform(get("/stats/overview").header("Authorization", "Bearer " + engineer)));
+        assertTrue(overview.hasNonNull("avgResponseMinutes"));
+        assertTrue(overview.hasNonNull("responseSlaRate"));
+    }
+
+    @Test void loanDueListsAndRemindersArePrivateAndLeadToTheSpecificReturn() throws Exception {
+        String employee = login("张伟");
+        var today = LocalDate.now();
+        db.update("insert into it_asset(no,name,category,status,borrower,borrower_id,borrow_due) values "
+                + "('AS-DUE-SOON','快到期设备','终端','借出中','张伟',1,?),"
+                + "('AS-DUE-LATE','已逾期设备','终端','借出中','张伟',1,?),"
+                + "('AS-DUE-OTHER','其他人设备','终端','借出中','赵敏',2,?),"
+                + "('AS-DUE-LATER','暂未到期','终端','借出中','张伟',1,?)",
+                today.plusDays(3), today.minusDays(1), today.plusDays(1), today.plusDays(4));
+        var due = body(mvc.perform(get("/assets/borrow-due").header("Authorization", "Bearer " + employee)));
+        assertEquals(1, due.path("upcoming").size());
+        assertEquals("AS-DUE-SOON", due.path("upcoming").get(0).path("no").asText());
+        assertEquals(1, due.path("overdue").size());
+        assertEquals("AS-DUE-LATE", due.path("overdue").get(0).path("no").asText());
+        assertEquals(3, borrowDueService.sendReminders(100));
+        assertEquals(0, borrowDueService.sendReminders(100));
+        assertEquals(List.of(1L), notificationRecipients("AS-DUE-SOON", "借用设备即将到期"));
+        assertEquals(List.of(1L), notificationRecipients("AS-DUE-LATE", "借用设备已逾期"));
+        var messages = body(mvc.perform(get("/notifies").header("Authorization", "Bearer " + employee)));
+        assertTrue(messages.toString().contains("/assets?returnAsset=AS-DUE-SOON"));
+        assertFalse(messages.toString().contains("AS-DUE-OTHER"));
+    }
+
+    @Test void theCalendarCanKeepTheSlaRunningWhileWaitingForInformation() throws Exception {
+        String admin = login("陈静"), employee = login("张伟"), engineer = login("李强");
+        var edits = (ObjectNode) settings(admin);
+        var calendar = (ObjectNode) edits.path("slaCalendar");
+        calendar.put("pauseForInfo", false);
+        calendar.putArray("weekdays").add(1).add(2).add(3).add(4).add(5);
+        calendar.putArray("holidays").add("2026-11-30");
+        var saved = body(mvc.perform(put("/admin/manage/settings").contentType("application/json").content(edits.toString())
+                .header("Authorization", "Bearer " + admin)));
+        assertEquals(calendar, saved.path("slaCalendar"));
+        var ticket = body(mvc.perform(post("/tickets").contentType("application/json")
+                .content("{\"title\":\"不停表测试\",\"description\":\"验证关闭等待停表\",\"location\":\"A座3楼\",\"cat1\":\"信息安全\"}")
+                .header("Authorization", "Bearer " + employee)));
+        String no = ticket.path("no").asText();
+        body(mvc.perform(post("/tickets/" + no + "/accept").header("Authorization", "Bearer " + engineer)));
+        var waiting = body(mvc.perform(post("/tickets/" + no + "/request-info").contentType("application/json")
+                .content("{\"note\":\"请说明发生时间\"}").header("Authorization", "Bearer " + engineer)));
+        assertEquals("PENDING_USER", waiting.path("status").asText());
+        assertFalse(waiting.hasNonNull("slaPausedAt"));
+        assertEquals(ticket.path("dueAt"), waiting.path("dueAt"));
     }
 
     @Test void dutySettingsAreEditableAndSurviveAnUpdateFromAnOlderClient() throws Exception {
@@ -1041,6 +1271,15 @@ class RegressionIntegrationTest {
                 .content(json.writeValueAsBytes(Map.of("reason","申请配发测试设备","items",List.of(Map.of("catalogId",catalogId,"qty",1)))))
                 .header("Authorization","Bearer "+owner)));
         String request="/purchase-requests/"+created.path("id").asLong();
+        String no = created.path("no").asText();
+        assertEquals(no, body(mvc.perform(get("/purchase-requests").param("no", no)
+                .header("Authorization", "Bearer " + admin))).get(0).path("no").asText());
+        assertTrue(body(mvc.perform(get("/purchase-requests").param("no", no)
+                .header("Authorization", "Bearer " + other))).isEmpty());
+        assertEquals("/admin/purchase?request=" + no, body(mvc.perform(get("/notifies")
+                .header("Authorization", "Bearer " + admin))).get(0).path("action").path("path").asText());
+        assertEquals("/assets?purchase=" + no, body(mvc.perform(get("/notifies")
+                .header("Authorization", "Bearer " + owner))).get(0).path("action").path("path").asText());
         long item=created.path("items").get(0).path("id").asLong();
         mvc.perform(get(request).header("Authorization","Bearer "+other)).andExpect(status().isForbidden());
         assertEquals("APPROVED",body(mvc.perform(post(request+"/approve").header("Authorization","Bearer "+admin))).path("status").asText());
@@ -1051,9 +1290,115 @@ class RegressionIntegrationTest {
         assertEquals("张伟",db.queryForObject("select user_name from it_asset where no='ASSET-TEST-2'",String.class));
     }
 
+    @Test void assetNotificationFindsTheExactApplicationAndRespectsOwnership() throws Exception {
+        String owner = login("张伟"), other = login("普通用户乙"), admin = login("陈静");
+        JsonNode request = body(mvc.perform(post("/asset-requests").contentType("application/json")
+                .content("{\"type\":\"RECEIVE\",\"assetNo\":\"ASSET-TEST-2\",\"reason\":\"测试跳转\"}")
+                .header("Authorization", "Bearer " + owner)));
+        String no = request.path("no").asText();
+        assertEquals("/admin/approvals?request=" + no, body(mvc.perform(get("/notifies")
+                .header("Authorization", "Bearer " + admin))).get(0).path("action").path("path").asText());
+        assertEquals("/assets?request=" + no, body(mvc.perform(get("/notifies")
+                .header("Authorization", "Bearer " + owner))).get(0).path("action").path("path").asText());
+        for (String token : List.of(owner, admin)) {
+            JsonNode rows = body(mvc.perform(get("/asset-requests").param("no", no).header("Authorization", "Bearer " + token)));
+            assertEquals(1, rows.size());
+            assertEquals(no, rows.get(0).path("no").asText());
+        }
+        assertTrue(body(mvc.perform(get("/asset-requests").param("no", no)
+                .header("Authorization", "Bearer " + other))).isEmpty());
+    }
+
+    @Test void personSuggestionsMatchNameDepartmentAndEmployeeNumberWithinEachDirectoryScope() throws Exception {
+        String admin = login("陈静"), ordinary = login("张伟");
+        db.update("update sys_user set employee_no='ENG-004', ding_user_id='fixture-engineer' where id=4");
+        db.update("update sys_user set employee_no='ENG-005' where id=5");
+        String contacts = "/meta/service-contacts/people";
+        String requesters = "/missing-reports/requesters";
+        for (String endpoint : List.of(contacts, requesters)) {
+            JsonNode rows = body(mvc.perform(get(endpoint).param("keyword", "李 技术 ＥＮＧ-004")
+                    .header("Authorization", "Bearer " + admin)));
+            assertEquals(1, rows.size());
+            assertEquals(4, rows.get(0).path("id").asInt());
+            assertEquals("技术中心", rows.get(0).path("department").asText());
+            for (String query : List.of("liqiang", "LQ", "lǐ qiáng", "ＬＱ 技术 ENG-004")) {
+                JsonNode phonetic = body(mvc.perform(get(endpoint).param("keyword", query)
+                        .header("Authorization", "Bearer " + admin)));
+                assertEquals(1, phonetic.size(), query);
+                assertEquals(4, phonetic.get(0).path("id").asInt(), query);
+            }
+            mvc.perform(get(endpoint).param("keyword", "技术").header("Authorization", "Bearer " + ordinary))
+                    .andExpect(status().isForbidden());
+        }
+        assertTrue(body(mvc.perform(get(contacts).param("keyword", "ENG-005").header("Authorization", "Bearer " + admin))).isEmpty());
+        assertEquals(5, body(mvc.perform(get(requesters).param("keyword", "ENG-005")
+                .header("Authorization", "Bearer " + admin))).get(0).path("id").asInt());
+    }
+
+    @Test void tutorialPracticeCannotWriteBusinessDataOrCountKnowledgeViews() throws Exception {
+        String employee = login("张伟");
+        db.update("insert into it_kb_article(id,title,category,summary,content,status,views) values(730,'练习示例','网络','摘要','正文','PUBLISHED',0)");
+        mvc.perform(post("/tickets").header("Authorization", "Bearer " + employee).header("X-Tutorial-Practice", "1"))
+                .andExpect(status().isConflict());
+        mvc.perform(post("/kb/730/vote").header("Authorization", "Bearer " + employee).header("X-Tutorial-Practice", "1")
+                .contentType("application/json").content("{\"helpful\":true}")).andExpect(status().isConflict());
+        body(mvc.perform(get("/kb/730").header("Authorization", "Bearer " + employee).header("X-Tutorial-Practice", "1")));
+        assertEquals(0, db.queryForObject("select views from it_kb_article where id=730", Integer.class));
+        body(mvc.perform(get("/kb/730").header("Authorization", "Bearer " + employee)));
+        assertEquals(1, db.queryForObject("select views from it_kb_article where id=730", Integer.class));
+    }
+
+    @Test void tutorialsAutoStartOncePerAccountRoleAndModule() throws Exception {
+        String employee = login("张伟"), coWorker = login("普通用户乙");
+        String read = "/tutorials", home = read + "/home/start", repair = read + "/repair/start";
+        assertTrue(body(mvc.perform(get(read).header("Authorization", "Bearer " + employee))).isEmpty());
+        assertTrue(body(mvc.perform(post(home).header("Authorization", "Bearer " + employee))).path("shouldStart").asBoolean());
+        assertFalse(body(mvc.perform(post(home).header("Authorization", "Bearer " + employee))).path("shouldStart").asBoolean());
+        assertTrue(body(mvc.perform(post(repair).header("Authorization", "Bearer " + employee))).path("shouldStart").asBoolean());
+        assertEquals(2, body(mvc.perform(get(read).header("Authorization", "Bearer " + employee))).size());
+        assertTrue(body(mvc.perform(get(read).header("Authorization", "Bearer " + coWorker))).isEmpty());
+        mvc.perform(post(read + "/unknown/start").header("Authorization", "Bearer " + employee)).andExpect(status().isBadRequest());
+        db.update("update sys_user set role='IT' where id=1");
+        String engineer = login("张伟");
+        assertTrue(body(mvc.perform(get(read).header("Authorization", "Bearer " + engineer))).isEmpty());
+        assertTrue(body(mvc.perform(post(home).header("Authorization", "Bearer " + engineer))).path("shouldStart").asBoolean());
+        db.update("update sys_user set role='SUPER_ADMIN' where id=3");
+        String superAdmin = login("陈静");
+        mvc.perform(get(read).header("Authorization", "Bearer " + superAdmin)).andExpect(status().isForbidden());
+        mvc.perform(post(home).header("Authorization", "Bearer " + superAdmin)).andExpect(status().isForbidden());
+        props.getDingtalk().setEnabled(true);
+        mvc.perform(get(read)).andExpect(status().isUnauthorized());
+    }
+
+    @Test void localPeoplePickersReceivePinyinAndUserSearchPaginatesPhoneticMatches() throws Exception {
+        String admin = login("陈静");
+        db.update("update sys_user set name='单吕', ding_user_id='fixture-engineer' where id=4");
+        db.update("update sys_user set name='单璐', status='DISABLED' where id=5");
+        var engineers = body(mvc.perform(get("/meta/engineers").header("Authorization", "Bearer " + admin)));
+        var config = body(mvc.perform(get("/admin/manage/incoming-notifications").header("Authorization", "Bearer " + admin)));
+        for (JsonNode choices : List.of(engineers, config.path("recipients"))) {
+            JsonNode selected = null;
+            for (JsonNode row : choices) {
+                assertNotEquals(5, row.path("id").asInt());
+                if (row.path("id").asInt() == 4) selected = row;
+            }
+            assertNotNull(selected);
+            assertTrue(selected.path("namePinyin").get(0).toString().contains("\"shan\""));
+            assertEquals("lu", selected.path("namePinyin").get(1).get(0).asText());
+        }
+        var current = body(mvc.perform(get("/admin/manage/users").param("keyword", "SHANLV").param("status", "ACTIVE")
+                .header("Authorization", "Bearer " + admin)));
+        assertEquals(1, current.path("total").asInt());
+        assertEquals(4, current.path("list").get(0).path("id").asInt());
+        var second = body(mvc.perform(get("/admin/manage/users").param("keyword", "sl").param("size", "1").param("page", "2")
+                .header("Authorization", "Bearer " + admin)));
+        assertEquals(2, second.path("total").asInt());
+        assertEquals(5, second.path("list").get(0).path("id").asInt());
+    }
+
     @Test void replacementHandoverPreservesTheAssetSelectedDuringApproval() throws Exception {
         String admin=login("陈静");
-        db.update("update it_asset set status='在用',user_name='张伟' where no='ASSET-TEST-1'");
+        db.update("update it_asset set status='在用',user_name='张伟',user_id=1 where no='ASSET-TEST-1'");
         db.update("update it_asset_request set type='REPLACE' where id=1");
         db.update("insert into sys_setting(setting_key,setting_value) values('runtime',?)", "{\"handoverCategories\":{\"REPLACE\":[\"终端\"]}}");
         JsonNode approved=body(mvc.perform(post("/asset-requests/1/approve").contentType("application/json")
@@ -1069,7 +1414,7 @@ class RegressionIntegrationTest {
     @Test void presetReplacementSurvivesSubmissionAndDingApprovalSynchronization() throws Exception {
         String owner=login("张伟"),admin=login("陈静");
         db.update("delete from it_asset_request");
-        db.update("update it_asset set status='在用',user_name='张伟' where no='ASSET-TEST-1'");
+        db.update("update it_asset set status='在用',user_name='张伟',user_id=1 where no='ASSET-TEST-1'");
         db.update("insert into sys_setting(setting_key,setting_value) values('runtime',?)",
                 "{\"approvalEnabled\":true,\"approvalMock\":true,\"approvalProcessCodes\":{\"REPLACE\":\"MOCK-TEST\"}}");
         JsonNode created=body(mvc.perform(post("/asset-requests").contentType("application/json")
@@ -1132,8 +1477,8 @@ class RegressionIntegrationTest {
             mine.path("list").forEach(row -> assertEquals(profile.path("id").asLong(), row.path("creatorId").asLong()));
             body(mvc.perform(post("/tickets/" + no + "/cancel").header("Authorization", "Bearer " + token)));
             String owned = "OWN-" + profile.path("id").asLong(), borrowed = "BORROWED-" + profile.path("id").asLong();
-            db.update("insert into it_asset(no,name,category,status,user_name) values(?,?,'终端','在用',?)", owned, "本人设备", name);
-            db.update("insert into it_asset(no,name,category,status,borrower) values(?,?,'终端','借出中',?)", borrowed, "本人借用设备", name);
+            db.update("insert into it_asset(no,name,category,status,user_name,user_id) values(?,?,'终端','在用',?,?)", owned, "本人设备", name, profile.path("id").asLong());
+            db.update("insert into it_asset(no,name,category,status,borrower,borrower_id) values(?,?,'终端','借出中',?,?)", borrowed, "本人借用设备", name, profile.path("id").asLong());
             for (String type : List.of("RECEIVE", "BORROW", "REPLACE", "RETURN")) {
                 var application = new LinkedHashMap<String,Object>(Map.of("type", type, "assetNo", switch(type) { case "REPLACE" -> owned; case "RETURN" -> borrowed; default -> "ASSET-TEST-1"; }, "category", "终端", "reason", "全角色本人资产服务测试"));
                 if (type.equals("BORROW")) application.put("expectReturn", java.time.LocalDate.now().plusDays(3).toString());
@@ -1274,8 +1619,8 @@ class RegressionIntegrationTest {
     @Test void allFourRequestsAcceptChosenCategoriesAndRejectStaleOrForeignAssets() throws Exception {
         db.update("delete from it_asset_request");
         String user=login("张伟");
-        db.update("insert into it_asset(no,name,category,status,user_name) values('REPLACE-ME','本人旧设备','打印复印','在用','张伟')");
-        db.update("insert into it_asset(no,name,category,status,borrower) values('RETURN-ME','本人借用设备','打印复印','借出中','张伟')");
+        db.update("insert into it_asset(no,name,category,status,user_name,user_id) values('REPLACE-ME','本人旧设备','打印复印','在用','张伟',1)");
+        db.update("insert into it_asset(no,name,category,status,borrower,borrower_id) values('RETURN-ME','本人借用设备','打印复印','借出中','张伟',1)");
         for(String[] item:List.of(new String[]{"RECEIVE","ASSET-TEST-1","终端"},new String[]{"BORROW","ASSET-TEST-2","终端"},new String[]{"REPLACE","REPLACE-ME","打印复印"},new String[]{"RETURN","RETURN-ME","打印复印"})) {
             Map<String,Object> request=new HashMap<>(Map.of("type",item[0],"assetNo",item[1],"category",item[2],"reason","分类申请回归测试"));
             if("BORROW".equals(item[0])) request.put("expectReturn",java.time.LocalDate.now().plusDays(1).toString());
@@ -1283,13 +1628,13 @@ class RegressionIntegrationTest {
             assertEquals(item[2],result.get("assetCategory").asText());
         }
         mvc.perform(post("/asset-requests").contentType("application/json").content("{\"type\":\"RECEIVE\",\"assetNo\":\"ASSET-TEST-1\",\"category\":\"打印复印\",\"reason\":\"不匹配的分类\"}").header("Authorization","Bearer "+user)).andExpect(status().isConflict());
-        db.update("update it_asset set user_name='普通用户乙' where no='REPLACE-ME'");
+        db.update("update it_asset set user_name='普通用户乙',user_id=6 where no='REPLACE-ME'");
         mvc.perform(post("/asset-requests").contentType("application/json").content("{\"type\":\"REPLACE\",\"assetNo\":\"REPLACE-ME\",\"category\":\"打印复印\",\"reason\":\"不能更换他人设备\"}").header("Authorization","Bearer "+user)).andExpect(status().isBadRequest());
     }
 
     @Test void replacementApprovalChecksSelectedNewCategoryAndPreservesAllocationOnFailure() throws Exception {
         String admin=login("陈静");
-        db.update("update it_asset set status='在用',user_name='张伟' where no='ASSET-TEST-1'");
+        db.update("update it_asset set status='在用',user_name='张伟',user_id=1 where no='ASSET-TEST-1'");
         db.update("update it_asset set category='打印复印' where no='ASSET-TEST-2'");
         db.update("update it_asset_request set type='REPLACE' where id=1");
         mvc.perform(post("/asset-requests/1/approve").contentType("application/json").content("{\"newAssetNo\":\"ASSET-TEST-2\",\"newAssetCategory\":\"终端\"}").header("Authorization","Bearer "+admin)).andExpect(status().isConflict());
@@ -1301,7 +1646,7 @@ class RegressionIntegrationTest {
 
     @Test void assigningCategoryPreservesBorrowStateAndDates() throws Exception {
         String admin=login("陈静");
-        db.update("update it_asset set status='借出中',borrower='张伟',borrow_due=? where no='ASSET-TEST-1'",java.sql.Date.valueOf(java.time.LocalDate.now().plusDays(3)));
+        db.update("update it_asset set status='借出中',borrower='张伟',borrower_id=1,borrow_due=? where no='ASSET-TEST-1'",java.sql.Date.valueOf(java.time.LocalDate.now().plusDays(3)));
         body(mvc.perform(put("/assets/ASSET-TEST-1/category").contentType("application/json").content("{\"category\":\"打印复印\"}").header("Authorization","Bearer "+admin)));
         assertEquals("借出中",db.queryForObject("select status from it_asset where no='ASSET-TEST-1'",String.class));
         assertEquals("张伟",db.queryForObject("select borrower from it_asset where no='ASSET-TEST-1'",String.class));
@@ -1448,6 +1793,7 @@ class RegressionIntegrationTest {
         try (var workbook = importTemplate(it)) {
             var header = workbook.getSheetAt(0).getRow(0);
             assertEquals("使用人", header.getCell(12).getStringCellValue());
+            assertEquals("使用人工号", header.getCell(13).getStringCellValue());
             Row assigned = importRow(workbook, 1, "IMPORT-ASSIGNED", "终端");
             assigned.createCell(5).setCellValue("三楼");
             assigned.createCell(12).setCellValue(" 张伟 ");
@@ -1458,6 +1804,11 @@ class RegressionIntegrationTest {
                     .header("Authorization", "Bearer " + it))).path("imported").asInt());
             workbook.getSheetAt(0).removeRow(assigned);
             workbook.getSheetAt(0).removeRow(explicit);
+            header.removeCell(header.getCell(13));
+            importRow(workbook, 1, "IMPORT-WITHOUT-NUMBER", "终端").createCell(12).setCellValue("张伟");
+            assertEquals(1, body(mvc.perform(multipart("/assets/import").file(excelUpload(workbook))
+                    .header("Authorization", "Bearer " + it))).path("imported").asInt());
+            workbook.getSheetAt(0).removeRow(workbook.getSheetAt(0).getRow(1));
             header.removeCell(header.getCell(12));
             header.getCell(0).setCellValue("资产编号");
             importRow(workbook, 1, "IMPORT-PREVIOUS-TEMPLATE", "终端");
@@ -1467,13 +1818,14 @@ class RegressionIntegrationTest {
         String assignedNo = db.queryForObject("select no from it_asset where erp_no='IMPORT-ASSIGNED'", String.class);
         var detail = body(mvc.perform(get("/assets/" + assignedNo).header("Authorization", "Bearer " + holder)));
         assertEquals("张伟", detail.path("asset").path("userName").asText());
+        assertEquals(1, detail.path("asset").path("userId").asLong());
         assertEquals("在用", detail.path("asset").path("status").asText());
         assertTrue(detail.path("history").get(0).path("detail").asText().contains("使用人=张伟"));
         assertEquals("李强", db.queryForObject("select user_name from it_asset where erp_no='IMPORT-EXPLICIT'", String.class));
         assertEquals("待入库", db.queryForObject("select status from it_asset where erp_no='IMPORT-PREVIOUS-TEMPLATE'", String.class));
         assertNull(db.queryForObject("select user_name from it_asset where erp_no='IMPORT-PREVIOUS-TEMPLATE'", String.class));
-        assertEquals(assignedNo, body(mvc.perform(get("/assets").param("keyword", "张伟")
-                .header("Authorization", "Bearer " + it))).get(0).path("no").asText());
+        assertTrue(body(mvc.perform(get("/assets").param("keyword", "张伟")
+                .header("Authorization", "Bearer " + it))).toString().contains(assignedNo));
         String request = json.writeValueAsString(Map.of("type","RETURN","assetNo",assignedNo,"reason","导入设备归还"));
         mvc.perform(post("/asset-requests").contentType("application/json").content(request)
                 .header("Authorization", "Bearer " + other)).andExpect(status().isBadRequest());
@@ -1490,7 +1842,7 @@ class RegressionIntegrationTest {
             var holder = row.createCell(12);
             for (String name : List.of("不存在的人", "已停用人员", "张伟")) {
                 holder.setCellValue(name);
-                String error = name.equals("张伟") ? "通讯录中有多名“张伟”，无法确定使用人"
+                String error = name.equals("张伟") ? "通讯录中有多名“张伟”，请按部门核对并填写使用人工号"
                         : "通讯录中找不到在职人员“" + name + "”，请核对使用人姓名";
                 mvc.perform(multipart("/assets/import").file(excelUpload(workbook)).header("Authorization", "Bearer " + it))
                         .andExpect(status().isBadRequest()).andExpect(jsonPath("$.message").value("第 3 行：" + error));
@@ -1502,6 +1854,42 @@ class RegressionIntegrationTest {
                     .andExpect(jsonPath("$.message").value("第 3 行：填写使用人时，设备状态请留空或填写在用"));
         }
         assertEquals(0, db.queryForObject("select count(*) from it_asset where erp_no like 'IMPORT-%'", Integer.class));
+    }
+
+    @Test void assetHolderUsesEmployeeNumberAndAccountIdAndSupportsManualLegacyBinding() throws Exception {
+        String it = login("李强"), firstHolder = login("张伟");
+        db.update("insert into sys_user(id,name,employee_no,dept_name,role,status) values(99,'张伟','00099','研发部','USER','ACTIVE')");
+        String secondHolder = jwt.create(new LoginUser(99L, "张伟", "USER", "研发部"));
+        try (var workbook = importTemplate(it)) {
+            Row row = importRow(workbook, 1, "IMPORT-EMPLOYEE-NUMBER", "终端");
+            row.createCell(12).setCellValue("张伟");
+            row.createCell(13).setCellValue("00099");
+            assertEquals(1, body(mvc.perform(multipart("/assets/import").file(excelUpload(workbook))
+                    .header("Authorization", "Bearer " + it))).path("imported").asInt());
+        }
+        String assetNo = db.queryForObject("select no from it_asset where erp_no='IMPORT-EMPLOYEE-NUMBER'", String.class);
+        assertEquals(99L, db.queryForObject("select user_id from it_asset where no=?", Long.class, assetNo));
+        var request = json.createObjectNode().put("type", "RETURN").put("assetNo", assetNo).put("reason", "同名用户归还校验");
+        mvc.perform(post("/asset-requests").contentType("application/json").content(request.toString())
+                .header("Authorization", "Bearer " + firstHolder)).andExpect(status().isBadRequest());
+        db.update("update sys_user set name='更名后的张伟' where id=99");
+        var owned = body(mvc.perform(get("/assets/" + assetNo).header("Authorization", "Bearer " + secondHolder)));
+        assertEquals("更名后的张伟", owned.path("asset").path("userName").asText());
+        assertTrue(owned.path("actions").toString().contains("RETURN"));
+        var applied = body(mvc.perform(post("/asset-requests").contentType("application/json").content(request.toString())
+                .header("Authorization", "Bearer " + secondHolder)));
+        assertEquals(99L, db.queryForObject("select applicant_id from it_asset_request where id=?", Long.class, applied.path("id").asLong()));
+        db.update("insert into it_asset(no,name,category,status,borrower) values('LEGACY-HOLDER','旧台账设备','终端','借出中','张伟')");
+        var legacy = body(mvc.perform(get("/assets/LEGACY-HOLDER").header("Authorization", "Bearer " + firstHolder)));
+        assertFalse(legacy.path("actions").toString().contains("RETURN"));
+        var binding = json.createObjectNode().put("editToken", legacy.path("editToken").asText()).put("borrowerId", 1);
+        mvc.perform(put("/assets/LEGACY-HOLDER/holders").contentType("application/json").content(binding.toString())
+                .header("Authorization", "Bearer " + firstHolder)).andExpect(status().isForbidden());
+        var bound = body(mvc.perform(put("/assets/LEGACY-HOLDER/holders").contentType("application/json").content(binding.toString())
+                .header("Authorization", "Bearer " + it)));
+        assertEquals(1L, bound.path("asset").path("borrowerId").asLong());
+        assertTrue(body(mvc.perform(get("/assets/LEGACY-HOLDER").header("Authorization", "Bearer " + firstHolder)))
+                .path("actions").toString().contains("RETURN"));
     }
 
     @Test void assetNumberGenerationContinuesAfterExistingNumbersAndHandlesConcurrentCreation() throws Exception {
@@ -1676,18 +2064,18 @@ class RegressionIntegrationTest {
         body(mvc.perform(put("/assets/ASSET-TEST-1/category").contentType("application/json").content("{\"category\":\"打印复印\"}").header("Authorization","Bearer "+admin)));
         putAsset(admin,"ASSET-TEST-1",beforeCategory).andExpect(status().isConflict());
         ObjectNode beforeBorrow=assetEdit(admin,"ASSET-TEST-1");
-        db.update("update it_asset set status='借出中',borrower='张伟',borrow_due=current_date where no='ASSET-TEST-1'");
+        db.update("update it_asset set status='借出中',borrower='张伟',borrower_id=1,borrow_due=current_date where no='ASSET-TEST-1'");
         putAsset(admin,"ASSET-TEST-1",beforeBorrow).andExpect(status().isConflict());
         assertEquals("张伟",db.queryForObject("select borrower from it_asset where no='ASSET-TEST-1'",String.class));
     }
 
     @Test void editorProtectsInUseAndBorrowedAssetStatesWhileAllowingMetadataChanges() throws Exception {
         String admin=login("陈静");
-        db.update("update it_asset set status='在用',user_name='张伟' where no='ASSET-TEST-1'");
+        db.update("update it_asset set status='在用',user_name='张伟',user_id=1 where no='ASSET-TEST-1'");
         ObjectNode edit=assetEdit(admin,"ASSET-TEST-1"); edit.put("status","闲置");
         putAsset(admin,"ASSET-TEST-1",edit).andExpect(status().isConflict());
         edit.put("status","在用"); edit.put("location","新工位"); body(putAsset(admin,"ASSET-TEST-1",edit));
-        db.update("update it_asset set status='借出中',borrower='张伟',borrow_due=? where no='ASSET-TEST-2'",java.sql.Date.valueOf(java.time.LocalDate.now().plusDays(3)));
+        db.update("update it_asset set status='借出中',borrower='张伟',borrower_id=1,borrow_due=? where no='ASSET-TEST-2'",java.sql.Date.valueOf(java.time.LocalDate.now().plusDays(3)));
         ObjectNode borrowed=assetEdit(admin,"ASSET-TEST-2"); borrowed.put("name","借用设备资料更新");
         JsonNode saved=body(putAsset(admin,"ASSET-TEST-2",borrowed));
         assertEquals("借出中",saved.get("asset").get("status").asText()); assertEquals("张伟",saved.get("asset").get("borrower").asText());

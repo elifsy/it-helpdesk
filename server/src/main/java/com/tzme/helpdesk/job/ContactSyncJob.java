@@ -4,11 +4,10 @@ import com.tzme.helpdesk.config.HelpdeskProperties;
 import com.tzme.helpdesk.service.DingTalkContactService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * 每天凌晨同步钉钉通讯录，离职当日停用并转派未结工单。
+ * 按运行配置同步钉钉通讯录，离职当日停用并转派未结工单。
  * 未开启钉钉接入时直接跳过，本地演示不会触发。
  */
 @Slf4j
@@ -21,8 +20,7 @@ public class ContactSyncJob {
     private final com.tzme.helpdesk.service.RuntimeSettingsService settings;
     private final com.tzme.helpdesk.mapper.ManagementMapper management;
 
-    @Scheduled(cron = "${helpdesk.dingtalk.sync-cron:0 0 2 * * ?}")
-    public void dailySync() {
+    public synchronized void dailySync() {
         if (!props.getDingtalk().isEnabled() || !settings.get().getContactSyncEnabled()) {
             return;
         }

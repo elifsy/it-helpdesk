@@ -47,7 +47,7 @@ public class AssetWorkbook {
         BUY_DATE("购置日期", "buyDate", 16), WARRANTY("维保方式", "warranty", 18),
         WARRANTY_END("维保到期", "warrantyEnd", 16), STATUS("设备状态", "status", 16),
         REMARK("备注", "remark", 35), ICON("卡片图标", "icon", 18),
-        USER_NAME("使用人", "userName", 20);
+        USER_NAME("使用人", "userName", 20), USER_EMPLOYEE_NO("使用人工号", "employeeNo", 22);
 
         final String label;
         final String property;
@@ -60,7 +60,7 @@ public class AssetWorkbook {
         }
     }
 
-    public record AssetRow(int number, AssetCreateReq request, String userName) { }
+    public record AssetRow(int number, AssetCreateReq request, String userName, String employeeNo) { }
 
     public byte[] template() {
         try (var workbook = new XSSFWorkbook(); var output = new ByteArrayOutputStream()) {
@@ -91,7 +91,8 @@ public class AssetWorkbook {
                     "ERP资产编号选填，填写时在台账和本表内均须唯一。",
                     "资产分类使用台账已有分类；资产分类和设备状态都可以从下拉选项里选择。",
                     "每次最多导入 500 台，文件上限 5 MB。",
-                    "使用人选填，请填写通讯录中唯一的在职人员姓名。填写后，状态留空会设为在用。",
+                    "使用人工号和姓名选填。优先填写通讯录工号，工号列保留文本格式和前导零。",
+                    "未填工号时只接受唯一的在职人员姓名；同名请核对部门后填写工号。两项均填时必须对应同一人。",
                     "已填写使用人时，设备状态可留空或填写在用。",
                     "使用人和状态均留空时默认为待入库，有存放位置时会设为闲置。",
                     "借出中的设备请通过资产借用流程登记。",
@@ -184,8 +185,11 @@ public class AssetWorkbook {
                 if (sheet == null || sheet.getRow(0) == null) throw invalidHeaders();
                 Row header = sheet.getRow(0);
                 int columnCount = Column.values().length;
-                // 旧版模板没有最后一列，仍可用于导入未分配使用人的资产。
-                if (format.formatCellValue(header.getCell(Column.USER_NAME.ordinal())).isBlank()) columnCount--;
+                // 兼容没有工号列或没有使用人列的旧模板，其他列仍完成表头校验。
+                if (format.formatCellValue(header.getCell(Column.USER_EMPLOYEE_NO.ordinal())).isBlank()) {
+                    columnCount--;
+                    if (format.formatCellValue(header.getCell(Column.USER_NAME.ordinal())).isBlank()) columnCount--;
+                }
                 for (Column column : Column.values()) {
                     if (column.ordinal() >= columnCount) continue;
                     String label = format.formatCellValue(header.getCell(column.ordinal())).strip();
@@ -260,11 +264,13 @@ public class AssetWorkbook {
         req.setWarrantyEnd(date(row, Column.WARRANTY_END, format));
         String userName = text(row, Column.USER_NAME, format);
         if (userName != null && userName.length() > 64) throw new BizException("使用人姓名最多填写64字");
+        String employeeNo = text(row, Column.USER_EMPLOYEE_NO, format);
+        if (employeeNo != null && employeeNo.length() > 32) throw new BizException("使用人工号最多填写32字");
         String status = text(row, Column.STATUS, format);
         if (status != null) {
             if (!STATUSES.contains(status)) throw new BizException("请选择模板中的设备状态，借用状态通过资产申请更新");
             req.setStatus(status);
-        } else if (userName != null) {
+        } else if (userName != null || employeeNo != null) {
             req.setStatus("在用");
         }
         req.setRemark(text(row, Column.REMARK, format));
@@ -274,7 +280,7 @@ public class AssetWorkbook {
             var error = errors.stream().filter(item -> item.getPropertyPath().toString().equals(column.property)).findFirst();
             if (error.isPresent()) throw new BizException(column.label + "：" + error.get().getMessage());
         }
-        return new AssetRow(number, req, userName);
+        return new AssetRow(number, req, userName, employeeNo);
     }
 
     private String text(Row row, Column column, DataFormatter format) {

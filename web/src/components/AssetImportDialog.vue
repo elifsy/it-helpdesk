@@ -85,7 +85,7 @@ async function importFile() {
             <div><dt>编号</dt><dd>资产编号由系统生成。ERP资产编号选填，填写时须唯一。ERP资产编号与 SN 建议保留文本格式，避免丢失前导零。</dd></div>
             <div><dt>资产分类</dt><dd>请从模板下拉选项选择台账已有分类。<span v-if="categoryNames">当前可选分类有 {{ categoryNames }}。</span></dd></div>
             <div><dt>设备状态</dt><dd>可以选择 {{ NEW_ASSET_STATUSES.join('、') }}。使用人和状态均留空时默认为「待入库」，填写了存放位置则设为「闲置」。借出中的设备请通过资产借用流程登记。</dd></div>
-            <div><dt>使用人</dt><dd>选填，请使用通讯录中唯一的在职人员姓名。填写后，设备状态可留空或填「在用」。</dd></div>
+            <div><dt>使用人 / 使用人工号</dt><dd>选填，优先填写通讯录工号。只填姓名时必须唯一，同名请核对部门并填写工号。填写后，设备状态可留空或填「在用」。</dd></div>
             <div><dt>购置日期和维保到期</dt><dd>可留空。填写时使用 Excel 日期单元格或 YYYY-MM-DD 格式，维保到期应等于或晚于购置日期。</dd></div>
             <div><dt>维保方式</dt><dd>可留空或填写文字，例如 {{ ASSET_WARRANTY_OPTIONS.join('、') }}。</dd></div>
             <div><dt>卡片图标</dt><dd>留空或填 auto 会自动匹配。也可以填写对应英文代码，例如 {{ iconOptions }}。</dd></div>

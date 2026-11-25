@@ -137,9 +137,11 @@ onBeforeUnmount(() => {
   <div>
     <div class="page-h"><h2>统计看板</h2><span class="small muted">近 30 天</span></div>
 
-    <div class="kpis">
+    <div class="kpis timing-kpis">
       <div class="kpi"><div class="n">{{ ov.total || 0 }}</div><div class="l">工单总量</div></div>
-      <div class="kpi"><div class="n" style="color: var(--brand)">{{ ov.slaRate || 0 }}%</div><div class="l">SLA 达成率</div></div>
+      <div class="kpi"><div class="n" style="color: var(--brand)">{{ ov.slaRate || 0 }}%</div><div class="l">解决达成率</div></div>
+      <div class="kpi"><div class="n">{{ ov.responseCount ? ov.avgResponseMinutes + ' 分' : '—' }}</div><div class="l">平均首次响应</div></div>
+      <div class="kpi"><div class="n" style="color: var(--brand)">{{ ov.responseSlaTotal ? ov.responseSlaRate + '%' : '—' }}</div><div class="l">首次响应达成率</div></div>
       <div class="kpi"><div class="n" style="color: var(--green)">{{ ov.avgHours || 0 }}h</div><div class="l">平均解决时长</div></div>
       <div class="kpi"><div class="n" style="color: var(--orange)">{{ ov.avgRating || '—' }}</div><div class="l">满意度（{{ ov.ratedCount || 0 }} 条）</div></div>
     </div>
@@ -160,15 +162,16 @@ onBeforeUnmount(() => {
         <div class="ph"><b>工程师工作量</b></div>
         <table class="tb">
           <thead>
-            <tr><th>工程师</th><th>处理量</th><th>满意度</th><th>平均耗时</th></tr>
+            <tr><th>工程师</th><th>处理量</th><th>满意度</th><th>平均首次响应</th><th>平均解决</th></tr>
           </thead>
           <tbody>
-            <tr v-if="!engineers.length"><td colspan="4" class="empty">暂无数据</td></tr>
+            <tr v-if="!engineers.length"><td colspan="5" class="empty">暂无数据</td></tr>
             <tr v-for="e in engineers" :key="e.name">
               <td style="font-weight: 600">{{ e.name }}</td>
               <td>{{ e.total }}</td>
               <td>{{ e.rating || '—' }}</td>
-              <td>{{ e.avgMinutes ? Math.round(Number(e.avgMinutes) / 6) / 10 + ' 小时' : '—' }}</td>
+              <td>{{ e.responseCount ? e.avgResponseMinutes + ' 分' : '—' }}</td>
+              <td>{{ e.resolvedCount ? e.avgMinutes + ' 分' : '—' }}</td>
             </tr>
           </tbody>
         </table>
@@ -197,6 +200,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.timing-kpis { grid-template-columns:repeat(auto-fit,minmax(134px,1fr)); }
 .page-h {
   display: flex;
   align-items: baseline;

@@ -37,6 +37,8 @@ public class StatsService {
             long slaOk = num(m.get("slaOk"));
             long slaTotal = num(m.get("slaTotal"));
             m.put("slaRate", slaTotal == 0 ? 0.0 : Math.round(slaOk * 1000.0 / slaTotal) / 10.0);
+            long responseTotal = num(m.get("responseSlaTotal"));
+            m.put("responseSlaRate", responseTotal == 0 ? 0.0 : Math.round(num(m.get("responseSlaOk")) * 1000.0 / responseTotal) / 10.0);
             long avgMin = num(m.get("avgMinutes"));
             m.put("avgHours", Math.round(avgMin / 6.0) / 10.0);
             long triedKb = num(m.get("triedKbCount"));

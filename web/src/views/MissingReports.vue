@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, reactive, ref, toRaw, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { attachmentApi, metaApi, missingReportApi, type MissingReport, type MissingReportRequester } from '../api'
 import { TICKET_TYPES, type TicketCategoriesByType } from '../config/ticket-types'
 import { useAuthStore } from '../stores/auth'
 import { useMissingReportStore } from '../stores/missingReports'
+import { readMissingReportDraft, writeMissingReportDraft } from '../utils/missing-report-draft'
 import { toast } from '../utils/toast'
+import PersonPicker from '../components/PersonPicker.vue'
 
 const route = useRoute()
 const auth = useAuthStore()
@@ -20,29 +22,56 @@ const loading = ref(false)
 const busy = ref(false)
 const error = ref('')
 const registrationOpen = ref(false)
-const keyword = ref('')
-const people = ref<MissingReportRequester[]>([])
 const requester = ref<MissingReportRequester>()
-const searched = ref(false)
-const searching = ref(false)
 const file = ref<File>()
-const registration = reactive({ title: '', description: '', channel: 'CHAT', completedAt: '' })
+const evidenceInput = ref<HTMLInputElement>()
+const registrationForm = ref<HTMLFormElement>()
+const emptyRegistration = { title: '', description: '', channel: 'CHAT', completedAt: '' }
+const registration = reactive({ ...emptyRegistration })
+const validationAttempted = ref(false)
+const missing = computed(() => ({
+  requester: !requester.value,
+  title: !registration.title.trim(),
+  channel: !registration.channel,
+  completedAt: !registration.completedAt,
+  description: !registration.description.trim(),
+  evidence: !file.value?.size
+}))
+const registrationComplete = computed(() => Object.values(missing.value).every(value => !value))
+const draftAccount = computed(() => staff.value && auth.user
+  ? `${auth.config?.demoEnabled ? 'demo' : 'user'}:${auth.user.id}` : '')
+const draftReady = ref(false)
+const draftStatus = ref<'idle' | 'saving' | 'saved' | 'failed'>('idle')
+const draft = computed(() => requester.value || file.value || registration.title || registration.description
+  || registration.completedAt || registration.channel !== emptyRegistration.channel
+  ? { registration: { ...registration }, requester: requester.value && toRaw(requester.value), evidence: file.value }
+  : undefined)
 const cancelReason = ref('')
 const cancelling = ref(false)
 const categories = ref<TicketCategoriesByType>({})
 const form = reactive({ title: '', description: '', location: '', type: 'INCIDENT', cat1: '', cat2: '' })
 const primary = computed(() => Object.keys(categories.value[form.type] || {}))
 const secondary = computed(() => categories.value[form.type]?.[form.cat1] || [])
-const evidenceLinks = ref<Record<number, string>>({})
-const evidenceLoading = ref<number>()
+type ReportEvidence = Awaited<ReturnType<typeof missingReportApi.detail>>['evidence'][number]
+type EvidencePreview = { status: 'loading' | 'failed'; url?: never } | { status: 'ready'; url: string }
+const evidencePreviews = ref<Partial<Record<number, EvidencePreview>>>({})
 const labels = { PENDING: '待补报', SUBMITTED: '已补报', CANCELLED: '已撤销' }
 let listVersion = 0
 let detailVersion = 0
+let draftVersion = 0
+
+function resetRegistration() {
+  requester.value = undefined
+  file.value = undefined
+  Object.assign(registration, emptyRegistration)
+  validationAttempted.value = false
+}
 
 function clearEvidence() {
-  Object.values(evidenceLinks.value).forEach(url => URL.revokeObjectURL(url))
-  evidenceLinks.value = {}
-  evidenceLoading.value = undefined
+  for (const preview of Object.values(evidencePreviews.value)) {
+    if (preview?.url) URL.revokeObjectURL(preview.url)
+  }
+  evidencePreviews.value = {}
 }
 
 function closeDetail() {
@@ -82,6 +111,9 @@ async function openDetail(row: MissingReport) {
     const result = await missingReportApi.detail(row.no)
     if (version !== detailVersion) return
     detail.value = result
+    for (const item of result.evidence) {
+      if (isImage(item)) void loadEvidence(item)
+    }
     Object.assign(form, { title: result.report.title, description: result.report.description, location: '', type: 'INCIDENT' })
     resetCategory()
     await nextTick()
@@ -91,52 +123,74 @@ async function openDetail(row: MissingReport) {
   } catch (e: any) { if (version === detailVersion) error.value = e.message || '详情加载失败' }
 }
 
-async function preview(id: number, storedName: string) {
-  const version = detailVersion
-  evidenceLoading.value = id
-  error.value = ''
-  try {
-    const blob = await attachmentApi.blob(storedName)
-    if (version === detailVersion) evidenceLinks.value[id] = URL.createObjectURL(blob)
-  } catch (e: any) { if (version === detailVersion) error.value = e.message || '证据读取失败' }
-  finally { if (version === detailVersion) evidenceLoading.value = undefined }
+function isImage(item: ReportEvidence) {
+  return item.contentType?.startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(item.storedName)
 }
 
-async function search() {
-  const term = keyword.value.trim()
-  if (!term || searching.value) return
-  searching.value = true
-  searched.value = false
-  error.value = ''
+async function loadEvidence({ id, storedName }: ReportEvidence) {
+  const current = evidencePreviews.value[id]
+  if (current && current.status !== 'failed') return
+  const version = detailVersion
+  evidencePreviews.value[id] = { status: 'loading' }
   try {
-    people.value = await missingReportApi.search(term)
-    searched.value = true
-  } catch (e: any) { error.value = e.message || '搜索失败' }
-  finally { searching.value = false }
+    const blob = await attachmentApi.blob(storedName)
+    if (version === detailVersion) evidencePreviews.value[id] = { status: 'ready', url: URL.createObjectURL(blob) }
+  } catch {
+    if (version === detailVersion) evidencePreviews.value[id] = { status: 'failed' }
+  }
+}
+
+function imageFailed(id: number, event: Event) {
+  const url = evidencePreviews.value[id]?.url
+  if (!url || (event.currentTarget as HTMLImageElement).src !== url) return
+  URL.revokeObjectURL(url)
+  evidencePreviews.value[id] = { status: 'failed' }
 }
 
 function selectEvidence(event: Event) {
-  file.value = (event.target as HTMLInputElement).files?.[0]
+  const input = event.target as HTMLInputElement
+  const selected = input.files?.[0]
+  if (selected) file.value = selected
+  input.value = ''
+}
+
+async function highlightMissingFields() {
+  validationAttempted.value = true
+  await nextTick()
+  const fields = registrationForm.value?.querySelectorAll<HTMLElement>('[aria-invalid="true"]')
+  if (!fields?.length) return
+  fields[0].focus({ preventScroll: true })
+  fields[0].scrollIntoView({ block: 'nearest' })
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  for (const field of fields) {
+    field.animate?.([
+      { boxShadow: '0 0 0 1px var(--red)' },
+      { boxShadow: '0 0 0 5px var(--red-bg)' },
+      { boxShadow: '0 0 0 1px var(--red)' }
+    ], { duration: 400, iterations: 2 })
+  }
 }
 
 async function register() {
-  if (busy.value || !requester.value || !file.value) return
+  const account = draftAccount.value
+  if (busy.value || !draftReady.value || !account) return
+  if (!registrationComplete.value || !requester.value || !file.value) {
+    await highlightMissingFields()
+    return
+  }
   busy.value = true
   error.value = ''
   try {
     const completedAt = registration.completedAt.replace('T', ' ')
     await missingReportApi.register({ ...registration, requesterId: requester.value.id,
       completedAt: completedAt.length === 16 ? completedAt + ':00' : completedAt }, file.value)
+    const cleared = await writeMissingReportDraft(account).then(() => true, () => false)
+    if (account !== draftAccount.value) return
     registrationOpen.value = false
-    requester.value = undefined
-    file.value = undefined
-    keyword.value = ''
-    people.value = []
-    searched.value = false
-    Object.assign(registration, { title: '', description: '', channel: 'CHAT', completedAt: '' })
+    resetRegistration()
     page.value = 1
     await load()
-    toast('已登记待补报事项')
+    toast(cleared ? '已登记待补报事项' : '已登记待补报事项，草稿清理失败')
   } catch (e: any) { error.value = e.message || '登记失败' }
   finally { busy.value = false }
 }
@@ -162,6 +216,45 @@ watch(staff, () => {
   registrationOpen.value = false
   void load()
 }, { immediate: true })
+
+watch(draftAccount, async (account, _, onCleanup) => {
+  let active = true
+  onCleanup(() => { active = false })
+  draftVersion++
+  draftReady.value = false
+  draftStatus.value = 'idle'
+  registrationOpen.value = false
+  resetRegistration()
+  if (!account) return
+  try {
+    const saved = await readMissingReportDraft(account)
+    if (!active) return
+    if (saved) {
+      Object.assign(registration, saved.registration)
+      requester.value = saved.requester
+      file.value = saved.evidence
+      draftStatus.value = 'saved'
+    }
+  } catch {
+    if (active) draftStatus.value = 'failed'
+  } finally {
+    await nextTick()
+    if (active) draftReady.value = true
+  }
+}, { immediate: true, flush: 'sync' })
+
+watch(draft, async value => {
+  const account = draftAccount.value
+  if (!draftReady.value || !account) return
+  const version = ++draftVersion
+  draftStatus.value = 'saving'
+  try {
+    await writeMissingReportDraft(account, value)
+    if (version === draftVersion) draftStatus.value = value ? 'saved' : 'idle'
+  } catch {
+    if (version === draftVersion) draftStatus.value = 'failed'
+  }
+})
 onUnmounted(() => { listVersion++; closeDetail() })
 </script>
 
@@ -169,8 +262,8 @@ onUnmounted(() => { listVersion++; closeDetail() })
   <div class="reports">
     <header class="report-heading">
       <h2>{{ staff ? '紧急事项补报' : '我的待补报事项' }}</h2>
-      <button v-if="staff" class="btn pri" type="button" :disabled="busy" @click="registrationOpen = !registrationOpen">
-        {{ registrationOpen ? '收起登记' : '登记已完成事项' }}
+      <button v-if="staff" class="btn pri" type="button" :disabled="busy || !draftReady" @click="registrationOpen = !registrationOpen">
+        {{ registrationOpen ? '收起登记' : draft ? '继续填写草稿' : '登记已完成事项' }}
       </button>
       <router-link v-else class="btn sm" to="/home">返回首页</router-link>
     </header>
@@ -178,27 +271,52 @@ onUnmounted(() => { listVersion++; closeDetail() })
 
     <section v-if="staff && registrationOpen" class="card">
       <h3>登记已完成事项</h3>
-      <form class="report-search" @submit.prevent="search">
-        <label>搜索需求人<input v-model="keyword" class="inp" placeholder="姓名或工号" maxlength="64" /></label>
-        <button class="btn sm" :disabled="searching || !keyword.trim()">搜索</button>
-      </form>
-      <div v-if="people.length" class="staff-options">
-        <button v-for="person in people" :key="person.id" class="btn sm" type="button"
-          :class="{ pri: requester?.id === person.id }" :aria-pressed="requester?.id === person.id" @click="requester = person">
-          {{ [person.name, person.department, person.employeeNo].filter(Boolean).join(' · ') }}
-        </button>
-      </div>
-      <p v-else-if="searched" class="small muted">暂无匹配的在职人员。</p>
-      <p v-if="requester" class="small muted">需求人 {{ requester.name }}{{ requester.department ? ' · ' + requester.department : '' }}</p>
-      <form class="report-form" @submit.prevent="register">
-        <label class="wide">事项标题<input v-model.trim="registration.title" class="inp" maxlength="200" required /></label>
-        <label>沟通方式<select v-model="registration.channel" class="sel"><option value="CHAT">消息</option><option value="PHONE">电话</option></select></label>
-        <label>处理完成时间<input v-model="registration.completedAt" type="datetime-local" class="inp" required /></label>
-        <label class="wide">处理说明<textarea v-model.trim="registration.description" class="ta" maxlength="500" required /></label>
-        <label class="wide">佐证附件<input type="file" class="inp" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,.mp3,.m4a,.wav" required @change="selectEvidence" />
-          <small class="muted">上传聊天截图、通话记录截图或电话录音。</small>
+      <form ref="registrationForm" class="report-form registration-form" novalidate @submit.prevent="register">
+        <PersonPicker class="wide" label="需求人" required :search="missingReportApi.search" :selected="requester" :disabled="busy"
+          :invalid="validationAttempted && missing.requester"
+          @select="requester = $event" @clear="requester = undefined" />
+        <label class="wide"><span class="lb">事项标题<i aria-hidden="true">*</i></span>
+          <input v-model.trim="registration.title" class="inp" maxlength="200" required :disabled="busy"
+            :aria-invalid="validationAttempted && missing.title || undefined" />
         </label>
-        <div class="wide"><button class="btn pri" :disabled="busy || !requester || !file">提交登记</button></div>
+        <label><span class="lb">沟通方式<i aria-hidden="true">*</i></span>
+          <select v-model="registration.channel" class="sel" required :disabled="busy"
+            :aria-invalid="validationAttempted && missing.channel || undefined">
+            <option value="CHAT">消息</option><option value="PHONE">电话</option>
+          </select>
+        </label>
+        <label><span class="lb">处理完成时间<i aria-hidden="true">*</i></span>
+          <input v-model="registration.completedAt" type="datetime-local" class="inp" required :disabled="busy"
+            :aria-invalid="validationAttempted && missing.completedAt || undefined" />
+        </label>
+        <label class="wide"><span class="lb">处理说明<i aria-hidden="true">*</i></span>
+          <textarea v-model.trim="registration.description" class="ta" maxlength="500" required :disabled="busy"
+            :aria-invalid="validationAttempted && missing.description || undefined" />
+        </label>
+        <div class="wide registration-attachment">
+          <span class="lb">佐证附件<i aria-hidden="true">*</i></span>
+          <input ref="evidenceInput" type="file" hidden :disabled="busy"
+            accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,.mp3,.m4a,.wav" @change="selectEvidence" />
+          <div class="registration-file">
+            <button class="btn sm" type="button" :disabled="busy" :aria-label="file ? '更换佐证附件' : '选择佐证附件'"
+              aria-describedby="registration-file-name" :aria-invalid="validationAttempted && missing.evidence || undefined"
+              @click="evidenceInput?.click()">{{ file ? '更换文件' : '选择文件' }}</button>
+            <span id="registration-file-name" class="small" :class="{ muted: !file }">{{ file?.name || '未选择文件' }}</span>
+            <button v-if="file" class="btn sm" type="button" :disabled="busy" aria-label="移除佐证附件" @click="file = undefined">移除</button>
+          </div>
+          <small class="muted">上传聊天截图、通话记录截图或电话录音。</small>
+        </div>
+        <div class="wide">
+          <p v-if="validationAttempted && !registrationComplete" class="small registration-hint" role="alert">请补齐标红的必填项。</p>
+          <div class="registration-actions">
+            <button class="btn pri" type="submit" :disabled="busy" :aria-disabled="!registrationComplete || undefined">
+              {{ busy ? '提交中…' : '提交登记' }}
+            </button>
+            <small v-if="draftStatus !== 'idle'" class="muted" role="status">
+              {{ { saving: '正在保存草稿…', saved: '草稿已自动保存到当前浏览器', failed: '草稿保存失败，请保留当前页面' }[draftStatus] }}
+            </small>
+          </div>
+        </div>
       </form>
     </section>
 
@@ -211,14 +329,20 @@ onUnmounted(() => { listVersion++; closeDetail() })
       <p class="small muted">登记人 {{ detail.report.recordedBy }} · {{ labels[detail.report.status] }}</p>
       <p class="report-description">{{ detail.report.description }}</p>
       <div v-for="item in detail.evidence" :key="item.id" class="evidence">
-        <button v-if="!evidenceLinks[item.id]" type="button" class="btn sm" :disabled="evidenceLoading !== undefined" @click="preview(item.id, item.storedName)">
-          {{ evidenceLoading === item.id ? '读取中…' : '查看证据 · ' + item.fileName }}
-        </button>
-        <template v-else>
-          <img v-if="item.contentType.startsWith('image/')" :src="evidenceLinks[item.id]" :alt="item.fileName" />
-          <audio v-else-if="item.contentType.startsWith('audio/')" :src="evidenceLinks[item.id]" controls />
-          <a class="btn sm" :href="evidenceLinks[item.id]" target="_blank" rel="noopener">打开 {{ item.fileName }}</a>
+        <p v-if="isImage(item)" class="evidence-name small muted">{{ item.fileName }}</p>
+        <p v-if="evidencePreviews[item.id]?.status === 'loading'" class="small muted" role="status">附件加载中…</p>
+        <div v-else-if="evidencePreviews[item.id]?.status === 'failed'" class="evidence-error">
+          <span class="small" role="alert">{{ isImage(item) ? '图片预览失败' : '附件加载失败' }}</span>
+          <button type="button" class="btn sm" @click="loadEvidence(item)">重试</button>
+        </div>
+        <template v-else-if="evidencePreviews[item.id]?.status === 'ready'">
+          <img v-if="isImage(item)" :src="evidencePreviews[item.id]?.url" :alt="item.fileName" @error="imageFailed(item.id, $event)" />
+          <template v-else>
+            <audio v-if="item.contentType?.startsWith('audio/')" :src="evidencePreviews[item.id]?.url" controls />
+            <a class="btn sm" :href="evidencePreviews[item.id]?.url" target="_blank" rel="noopener">打开 {{ item.fileName }}</a>
+          </template>
         </template>
+        <button v-else-if="!isImage(item)" type="button" class="btn sm" @click="loadEvidence(item)">查看证据 · {{ item.fileName }}</button>
       </div>
       <router-link v-if="detail.report.ticketNo && (auth.can('ticket.view.all') || (!staff && auth.can('ticket.view.own')))"
         :to="'/ticket/' + encodeURIComponent(detail.report.ticketNo)">查看已归档工单 {{ detail.report.ticketNo }}</router-link>
@@ -261,16 +385,21 @@ onUnmounted(() => { listVersion++; closeDetail() })
 </template>
 
 <style scoped>
-.reports { display:grid; gap:12px; }
-.report-heading, .report-search, .staff-options, .report-pager { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.reports { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; }
+.report-heading, .staff-options, .report-pager { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
 .report-heading { justify-content:space-between; }
 .report-heading h2, .report-heading h3 { margin:0; overflow-wrap:anywhere; }
-.report-search { margin:12px 0; align-items:end; }
-.report-search label { flex:1; min-width:150px; }
 .report-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-top:12px; }
-.report-form label, .report-search label { display:grid; gap:5px; font-size:13px; }
+.report-form label { display:grid; gap:5px; font-size:13px; }
+.report-form .lb { margin-bottom:0; }
 .report-form .wide { grid-column:1 / -1; }
 .report-form .inp, .report-form .sel, .report-form .ta { width:100%; min-width:0; }
+.registration-form :deep([aria-invalid="true"]) { border-color:var(--red); box-shadow:0 0 0 2px var(--red-bg); }
+.registration-form .btn[aria-disabled="true"] { background:var(--t3); border-color:var(--t3); cursor:not-allowed; }
+.registration-attachment { display:grid; gap:5px; min-width:0; }
+.registration-file, .registration-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.registration-file > span { overflow-wrap:anywhere; }
+.registration-hint { margin:0 0 8px; color:#b32921; }
 .report-detail > * + * { margin-top:10px; }
 .report-detail { scroll-margin-top:70px; }
 .report-description { white-space:pre-wrap; overflow-wrap:anywhere; }
@@ -280,7 +409,10 @@ onUnmounted(() => { listVersion++; closeDetail() })
 .report-row small { display:block; margin-top:4px; }
 .report-row .pill { flex-shrink:0; }
 .report-pager { justify-content:center; }
-.evidence img { display:block; max-width:100%; max-height:400px; object-fit:contain; }
+.evidence { min-width:0; }
+.evidence-name { margin:0 0 6px; overflow-wrap:anywhere; }
+.evidence img { display:block; max-width:100%; height:auto; border-radius:8px; }
+.evidence-error { display:flex; flex-wrap:wrap; align-items:center; gap:8px; color:#b32921; }
 .evidence audio { max-width:100%; }
 @media (max-width:580px) { .report-form { grid-template-columns:minmax(0,1fr); } }
 </style>

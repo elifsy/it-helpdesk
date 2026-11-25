@@ -2,6 +2,7 @@ package com.tzme.helpdesk.controller;
 
 import com.tzme.helpdesk.common.ApiResponse;
 import com.tzme.helpdesk.common.CurrentUser;
+import com.tzme.helpdesk.common.PersonSearch;
 import com.tzme.helpdesk.domain.SolutionCode;
 import com.tzme.helpdesk.domain.User;
 import com.tzme.helpdesk.dto.DutySettings;
@@ -56,7 +57,10 @@ public class MetaController {
     @GetMapping("/engineers")
     @com.tzme.helpdesk.security.RequiresPermission({"ticket.dispatch","user.manage"})
     public ApiResponse<List<User>> engineers() {
-        return ApiResponse.ok(userMapper.listActive().stream().filter(user -> rolePermissions.resolve(user).hasPermission("ticket.handle")).toList());
+        var engineers = userMapper.listActive().stream()
+                .filter(user -> rolePermissions.resolve(user).hasPermission("ticket.handle")).toList();
+        engineers.forEach(user -> user.setNamePinyin(PersonSearch.namePinyin(user.getName())));
+        return ApiResponse.ok(engineers);
     }
 
     @GetMapping("/me")

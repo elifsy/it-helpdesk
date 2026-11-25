@@ -74,6 +74,18 @@ public class TicketController {
         return ApiResponse.ok(ticketService.confirm(no, req == null ? new RateReq() : req));
     }
 
+    @PostMapping("/{no}/request-info")
+    @com.tzme.helpdesk.security.RequiresPermission("ticket.handle")
+    public ApiResponse<Ticket> requestInfo(@PathVariable String no, @Valid @RequestBody TicketInfoReq req) {
+        return ApiResponse.ok(ticketService.requestInfo(no, req));
+    }
+
+    @PostMapping("/{no}/provide-info")
+    @com.tzme.helpdesk.security.RequiresPermission({"ticket.confirm","ticket.handle"})
+    public ApiResponse<Ticket> provideInfo(@PathVariable String no, @Valid @RequestBody TicketInfoReq req) {
+        return ApiResponse.ok(ticketService.provideInfo(no, req));
+    }
+
     @PostMapping("/{no}/rate")
     @com.tzme.helpdesk.security.RequiresPermission({"ticket.confirm"})
     public ApiResponse<Ticket> rate(@PathVariable String no, @Valid @RequestBody RateReq req) {

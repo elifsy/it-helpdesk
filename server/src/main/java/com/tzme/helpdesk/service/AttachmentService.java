@@ -167,7 +167,7 @@ public class AttachmentService {
         LoginUser user = CurrentUser.require();
         Attachment a = require(id);
         access.check(a.getBizType(), a.getBizNo(), true);
-        if (!a.getUploader().equals(user.name()) && !user.hasRole("ADMIN") && !user.hasPermission("ticket.handle") && !user.hasPermission("request.approve")) {
+        if (!a.getUploader().equals(user.name()) && !com.tzme.helpdesk.security.Roles.isAdmin(user.role()) && !user.hasPermission("ticket.handle") && !user.hasPermission("request.approve")) {
             throw new BizException(403, "只能删除自己上传的附件");
         }
         mapper.delete(id);

@@ -12,6 +12,8 @@ public class TicketEvent {
     private String toStatus;
     private String action;
     private String operator;
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private Long operatorId;
     private String remark;
     private LocalDateTime createdAt;
 }

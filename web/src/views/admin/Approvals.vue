@@ -1,15 +1,22 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { assetApi, assetCategoryApi, assetRequestApi, dingApprovalApi, type AssetCategory } from '../../api'
 import { HANDOVER_HINT, HANDOVER_NAME, REQ_STATUS_CLASS, REQ_STATUS_NAME, REQ_TYPE, handoverActionLabel } from '../../utils/dict'
 import { toast } from '../../utils/toast'
+import { hasAssetHolder } from '../../utils/assets'
+import { notificationReference } from '../../utils/notification-links'
 import { useAuthStore } from '../../stores/auth'
 import AssetPicker from '../../components/AssetPicker.vue'
 const auth = useAuthStore()
+const route = useRoute()
+const router = useRouter()
+const requestNo = computed(() => notificationReference(route.query.request))
 
 const tab = ref('PENDING')
 const rows = ref<any[]>([])
 const loading = ref(false)
+let loadVersion = 0
 
 const showApprove = ref(false)
 const approveDialog = ref<HTMLElement>()
@@ -33,16 +40,24 @@ watch(showApprove, async open => {
 onUnmounted(() => { if (approveOverflow !== null) document.body.style.overflow = approveOverflow })
 
 async function load() {
+  const version = ++loadVersion
   loading.value = true
   try {
-    const [requests, list] = await Promise.all([assetRequestApi.list({ status: tab.value === 'ALL' ? undefined : tab.value }), auth.can('asset.view') ? assetCategoryApi.list() : Promise.resolve([])])
+    const [requests, list] = await Promise.all([assetRequestApi.list({ status: tab.value === 'ALL' ? undefined : tab.value, no: requestNo.value }), auth.can('asset.view') ? assetCategoryApi.list() : Promise.resolve([])])
+    if (version !== loadVersion) return
     rows.value = requests
     categories.value = auth.can('asset.view') ? list : Array.from(new Set<string>(requests.map((r: any) => r.assetCategory).filter(Boolean))).map((name, index) => ({ id: index, name, sort: index, assetCount: 0 }))
   } catch (e: any) {
-    toast(e.message)
+    if (version === loadVersion) toast(e.message)
   } finally {
-    loading.value = false
+    if (version === loadVersion) loading.value = false
   }
+}
+
+function switchTab(value: string) {
+  tab.value = value
+  if (requestNo.value) void router.replace({ path: route.path })
+  else void load()
 }
 
 const dingStatus = ref<any>({ enabled: false, mock: false })
@@ -95,13 +110,18 @@ async function mockDing(row: any, status: string) {
     toast(e.message)
   }
 }
-onMounted(() => { void load(); void loadDingStatus() })
+watch(requestNo, no => {
+  if (no) { tab.value = 'ALL'; category.value = '' }
+  rows.value = []
+  void load()
+}, { immediate: true })
+onMounted(loadDingStatus)
 
 async function openApprove(r: any) {
   current.value = r
   if (r.type === 'REPLACE') {
     const all = await assetApi.list({ status: '闲置' })
-    spareList.value = all.filter((a: any) => a.no !== r.assetNo && !a.userName?.trim() && !a.borrower?.trim())
+    spareList.value = all.filter((a: any) => a.no !== r.assetNo && !hasAssetHolder(a))
     newCategory.value = r.assetCategory || ''
     newAssetNo.value = ''
   }
@@ -142,18 +162,22 @@ async function doReject(r: any) {
     <div class="page-h"><h2>{{ auth.canApprove ? '申请审批' : '资产申请' }}</h2></div>
 
     <div class="filters">
-      <span :class="{ on: tab === 'PENDING' }" @click="tab = 'PENDING'; load()">待审批</span>
-      <span :class="{ on: tab === 'ALL' }" @click="tab = 'ALL'; load()">全部</span>
+      <span :class="{ on: tab === 'PENDING' }" @click="switchTab('PENDING')">待审批</span>
+      <span :class="{ on: tab === 'ALL' }" @click="switchTab('ALL')">全部</span>
       <span class="sp" />
       <button v-if="dingStatus.enabled" class="btn sm" :disabled="syncing" @click="syncDing">{{ syncing ? '同步中…' : '立即同步钉钉结果' }}</button>
       <select v-model="category" class="sel" style="width:150px" aria-label="申请分类筛选"><option value="">全部分类</option><option v-for="c in categories" :key="c.id" :value="c.name">{{ c.name }}</option></select>
       <span class="small muted">共 {{ filteredRows.length }} 条</span>
     </div>
 
+    <div v-if="requestNo" class="row small">
+      <span>当前申请 {{ requestNo }}</span>
+      <button class="btn sm" type="button" @click="switchTab('ALL')">查看全部申请</button>
+    </div>
     <div v-if="loading" class="empty">加载中…</div>
-    <div v-else-if="!filteredRows.length" class="empty">该分类下没有匹配的申请</div>
+    <div v-else-if="!filteredRows.length" class="empty">{{ requestNo ? '找不到这张申请或无权查看' : '该分类下没有匹配的申请' }}</div>
 
-    <div class="grid">
+    <div v-else class="grid">
       <div v-for="r in filteredRows" :key="r.id" class="card">
         <div class="row">
           <span class="pill b-blue">{{ REQ_TYPE[r.type]?.name }}</span>
@@ -182,7 +206,7 @@ async function doReject(r: any) {
         </div>
         <div v-if="r.status === 'APPROVED' && r.handoverStatus && auth.canApprove" class="row" style="margin-top: 10px">
           <span class="sp" />
-          <button class="btn sm pri" :disabled="handing === r.id" @click="doHandover(r)">
+          <button class="btn sm pri" :disabled="handing === r.id" data-tutorial-effect="write" @click="doHandover(r)">
             {{ handing === r.id ? '处理中…' : handoverActionLabel(r.type, r.handoverStatus) }}
           </button>
         </div>

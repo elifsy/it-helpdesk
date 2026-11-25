@@ -23,7 +23,9 @@ public interface PurchaseRequestMapper {
 
     List<PurchaseRequest> list(@Param("status") String status,
                                @Param("applicant") String applicant,
-                               @Param("mine") boolean mine);
+                               @Param("applicantId") Long applicantId,
+                               @Param("mine") boolean mine,
+                               @Param("no") String no);
 
     long countPending();
 

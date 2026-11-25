@@ -204,7 +204,7 @@ async function deleteCategory(row: AssetCategory) {
             <td><div class="name-cell"><span class="row-icon" :class="iconClass(rowIcon(a))"><DeviceIcon :name="rowIcon(a)" /></span><div><router-link style="font-weight:600" :to="assetRoute(a)" @click.stop>{{ a.name }}</router-link><div v-if="a.model" class="small muted asset-model">{{ a.model }}</div></div></div></td>
             <td>{{ a.category }}</td>
             <td class="mono">{{ a.sn || '—' }}</td>
-            <td>{{ a.userName || '—' }}</td>
+            <td>{{ a.userName || '—' }} <span v-if="(a.userName && a.userId == null) || (a.borrower && a.borrowerId == null)" class="small muted">归属待确认</span></td>
             <td>{{ a.location }}</td>
             <td>{{ a.warrantyEnd || '—' }}</td>
             <td><span class="pill" :class="ASSET_STATUS_CLASS[a.status] || 'b-gray'">{{ a.status }}</span></td>

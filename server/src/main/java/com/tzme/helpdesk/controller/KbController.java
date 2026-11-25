@@ -71,8 +71,9 @@ public class KbController {
 
     @GetMapping("/{id}")
     @com.tzme.helpdesk.security.RequiresPermission({"kb.view"})
-    public ApiResponse<KbArticle> detail(@PathVariable Long id) {
-        return ApiResponse.ok(kbService.detail(id));
+    public ApiResponse<KbArticle> detail(@PathVariable Long id,
+                                        @RequestHeader(name = "X-Tutorial-Practice", defaultValue = "0") String practice) {
+        return ApiResponse.ok(kbService.detail(id, !"1".equals(practice)));
     }
 
     @PostMapping("/{id}/vote")

@@ -2,7 +2,7 @@ export const STATUS_NAME: Record<string, string> = {
   NEW: '待受理',
   ACCEPTED: '已受理',
   IN_PROGRESS: '处理中',
-  PENDING_USER: '待用户',
+  PENDING_USER: '待补充信息',
   PENDING_VENDOR: '待第三方',
   PENDING_CONFIRM: '待确认',
   CLOSED: '已关闭',
@@ -107,14 +107,16 @@ export function statusName(s: string) {
   return STATUS_NAME[s] || s
 }
 
-export function remainText(minutes?: number | null) {
+export function remainText(minutes?: number | null, workTime?: boolean, pausedAt?: string | null) {
+  if (pausedAt) return 'SLA 已停表'
   if (minutes === null || minutes === undefined) return ''
+  const hours = workTime ? '工作小时' : '小时'
   if (minutes < 0) {
     const h = Math.floor(-minutes / 60)
-    return h > 0 ? `已超时 ${h} 小时` : `已超时 ${-minutes} 分钟`
+    return h > 0 ? `已超时 ${h} ${hours}` : `已超时 ${-minutes} 分钟`
   }
   const h = Math.floor(minutes / 60)
-  return h > 0 ? `剩余 ${h} 小时` : `剩余 ${minutes} 分钟`
+  return h > 0 ? `剩余 ${h} ${hours}` : `剩余 ${minutes} 分钟`
 }
 
 /** 购入申请单状态 */

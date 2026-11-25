@@ -13,6 +13,8 @@ import {
 } from '../utils/dict'
 import { toast } from '../utils/toast'
 import { ticketQueueText } from '../utils/ticketQueue'
+import PersonPicker from '../components/PersonPicker.vue'
+import type { PersonOption } from '../utils/people-search'
 
 const route = useRoute()
 const router = useRouter()
@@ -23,7 +25,7 @@ const loading = ref(true)
 const detailError = ref('')
 const attachmentLoading = ref(false)
 const attachmentError = ref('')
-const engineers = ref<any[]>([])
+const engineers = ref<PersonOption[]>([])
 const categoriesByType = ref<Record<string, Record<string, string[]>>>({})
 const busy = ref(false)
 const attachments = ref<any[]>([])
@@ -44,9 +46,9 @@ onUnmounted(() => {
   document.removeEventListener('visibilitychange', refreshVisibleProgress)
 })
 
-const dlg = ref<'' | 'dispatch' | 'record' | 'finish' | 'confirm' | 'rate'>('')
+const dlg = ref<'' | 'dispatch' | 'record' | 'finish' | 'confirm' | 'rate' | 'request-info' | 'provide-info' | 'resume-info'>('')
 const form = reactive({
-  assigneeId: '',
+  assigneeId: null as number | null,
   kind: 'REMOTE',
   content: '',
   costMin: 0,
@@ -62,8 +64,9 @@ const form = reactive({
 const t = computed(() => detail.value?.ticket)
 const canUpload = computed(() => auth.can('attachment.upload') && (t.value?.creatorId === auth.user?.id
   || auth.can('ticket.handle') || auth.can('ticket.accept') || auth.can('ticket.dispatch')))
-const actionPermissions: Record<string, string> = { ACCEPT: 'ticket.accept', REJECT: 'ticket.accept', DISPATCH: 'ticket.dispatch', RECORD: 'ticket.handle', FINISH: 'ticket.handle', CONFIRM: 'ticket.confirm', RATE: 'ticket.confirm', CANCEL: 'ticket.confirm' }
+const actionPermissions: Record<string, string> = { ACCEPT: 'ticket.accept', REJECT: 'ticket.accept', DISPATCH: 'ticket.dispatch', RECORD: 'ticket.handle', FINISH: 'ticket.handle', CONFIRM: 'ticket.confirm', RATE: 'ticket.confirm', CANCEL: 'ticket.confirm', REQUEST_INFO: 'ticket.handle', PROVIDE_INFO: 'ticket.confirm', RESUME_INFO: 'ticket.handle' }
 const actions = computed<string[]>(() => (detail.value?.actions || []).filter((action: string) => auth.can(actionPermissions[action]) && (action !== 'ACCEPT' || auth.can('ticket.handle'))))
+const infoTitle = computed(() => dlg.value === 'request-info' ? '请报修人补充信息' : dlg.value === 'resume-info' ? '恢复处理' : '补充工单信息')
 const cat1Options = computed(() => Object.keys(categoriesByType.value[t.value?.type] || {}))
 const cat2Options = computed(() => (categoriesByType.value[t.value?.type] || {})[form.cat1] || [])
 function onCat1Change() {
@@ -219,12 +222,15 @@ async function doAction(a: string) {
       toast('已撤销')
       await load()
     } else if (a === 'DISPATCH') {
-      form.assigneeId = engineers.value[0]?.id || ''
+      form.assigneeId = null
       dlg.value = 'dispatch'
     } else if (a === 'RECORD') {
       openDlg('record')
     } else if (a === 'FINISH') {
       openDlg('finish')
+    } else if (a === 'REQUEST_INFO' || a === 'PROVIDE_INFO' || a === 'RESUME_INFO') {
+      form.note = ''
+      openDlg(a === 'REQUEST_INFO' ? 'request-info' : a === 'PROVIDE_INFO' ? 'provide-info' : 'resume-info')
     } else if (a === 'CONFIRM') {
       openDlg('confirm')
     } else if (a === 'RATE') {
@@ -235,6 +241,20 @@ async function doAction(a: string) {
   } finally {
     busy.value = false
   }
+}
+
+async function submitInfo() {
+  const note = form.note.trim()
+  if (!note || busy.value || !t.value) return
+  busy.value = true
+  const requesting = dlg.value === 'request-info'
+  try {
+    await (requesting ? ticketApi.requestInfo : ticketApi.provideInfo)(t.value.no, note)
+    dlg.value = ''
+    toast(requesting ? '已通知报修人补充信息' : '工单已恢复处理')
+    await load()
+  } catch (e: any) { toast(e.message) }
+  finally { busy.value = false }
 }
 
 async function submitDispatch() {
@@ -318,7 +338,7 @@ async function submitRate() {
           <b style="font-size: 15px">{{ statusName(t.status) }}</b>
           <span class="sp" />
           <span v-if="t.overdue" class="pill b-red">已超时</span>
-          <span v-else-if="t.remainMinutes != null" class="small muted">{{ remainText(t.remainMinutes) }}</span>
+          <span v-else-if="t.remainMinutes != null" class="small muted">{{ remainText(t.remainMinutes, t.workTime, t.slaPausedAt) }}</span>
         </div>
         <div class="ttl">{{ t.title }}</div>
         <div class="mono" style="margin-top: 4px">{{ t.no }}</div>
@@ -342,7 +362,11 @@ async function submitRate() {
         <div class="kv"><span>故障位置</span><b class="ticket-location">{{ t.location || '—' }}</b></div>
         <div class="kv"><span>工程师</span><b>{{ t.assigneeName || '待接单' }}</b></div>
         <div class="kv"><span>提交</span><b>{{ t.createdAt }}</b></div>
+        <div v-if="t.responseDueAt" class="kv"><span>首次响应时限</span><b>{{ t.responseDueAt }}</b></div>
+        <div v-if="t.responseWorkMinutes != null" class="kv"><span>首次响应耗时</span><b>{{ t.responseWorkMinutes }} 分钟</b></div>
         <div v-if="t.dueAt" class="kv"><span>解决时限</span><b>{{ t.dueAt }}</b></div>
+        <div v-if="t.resolveWorkMinutes != null" class="kv"><span>解决耗时</span><b>{{ t.resolveWorkMinutes }} 分钟</b></div>
+        <div v-if="t.slaPausedAt || t.workTime" class="kv"><span>SLA 计时</span><b>{{ t.slaPausedAt ? '已停表 · 等待补充信息' : '按工作时间' }}</b></div>
         <div v-if="t.rating" class="kv"><span>评价</span><b>{{ t.rating }} 星 {{ t.ratingTags || '' }}</b></div>
       </div>
 
@@ -395,6 +419,9 @@ async function submitRate() {
               DISPATCH: '派单',
               RECORD: '添加处理记录',
               FINISH: '提交完成',
+              REQUEST_INFO: '要求补充信息',
+              PROVIDE_INFO: '补充信息',
+              RESUME_INFO: '恢复处理',
               CONFIRM: '确认结果',
               RATE: '评价',
               CANCEL: '撤销工单'
@@ -444,19 +471,27 @@ async function submitRate() {
     </aside>
 
     <!-- 派单 -->
+    <div v-if="dlg === 'request-info' || dlg === 'provide-info' || dlg === 'resume-info'" class="mask" @click.self="!busy && (dlg = '')">
+      <form class="dlg" @submit.prevent="submitInfo">
+        <div class="dlg-h">{{ infoTitle }}<button type="button" class="btn sm" :disabled="busy" aria-label="关闭" @click="dlg = ''">×</button></div>
+        <div class="dlg-b"><label class="fld"><span class="lb">{{ dlg === 'request-info' ? '需补充的内容' : '补充内容或恢复说明' }}<i>*</i></span>
+          <textarea v-model="form.note" class="ta" maxlength="400" required :disabled="busy" />
+        </label></div>
+        <div class="dlg-f"><button class="btn" type="button" :disabled="busy" @click="dlg = ''">取消</button>
+          <button class="btn pri" :disabled="busy || !form.note.trim()">{{ dlg === 'request-info' ? '发送补充要求' : '提交并恢复处理' }}</button></div>
+      </form>
+    </div>
+
     <div v-if="dlg === 'dispatch'" class="mask" @click.self="dlg = ''">
       <div class="dlg">
         <div class="dlg-h">派单<span class="x" @click="dlg = ''">×</span></div>
         <div class="dlg-b">
-          <label class="lb">选择工程师<i>*</i></label>
-          <select v-model="form.assigneeId" class="sel">
-            <option value="">请选择</option>
-            <option v-for="e in engineers" :key="e.id" :value="e.id">{{ e.name }} · {{ e.skill || '通用' }}</option>
-          </select>
+          <PersonPicker label="选择工程师" :options="engineers" :selected="engineers.find(e => e.id === form.assigneeId)"
+            @select="form.assigneeId = $event.id" @clear="form.assigneeId = null" />
         </div>
         <div class="dlg-f">
           <button class="btn" @click="dlg = ''">取消</button>
-          <button class="btn pri" @click="submitDispatch">确认派单</button>
+          <button class="btn pri" :disabled="!form.assigneeId" @click="submitDispatch">确认派单</button>
         </div>
       </div>
     </div>

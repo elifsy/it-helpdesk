@@ -82,7 +82,7 @@ onUnmounted(() => clearInterval(contactTimer))
             <span class="pill" :class="'p' + t.priority[1].toLowerCase()">{{ t.priority }}</span>
             <span class="tt">{{ t.title }}</span>
             <span class="sp" />
-            <span class="small muted">{{ remainText(t.remainMinutes) || statusName(t.status) }}</span>
+            <span class="small muted">{{ remainText(t.remainMinutes, t.workTime, t.slaPausedAt) || statusName(t.status) }}</span>
           </div>
           <div class="mm">{{ t.no }} · {{ t.creatorName }} · {{ t.cat1 }}</div>
           <span v-if="t.pendingReportCount" class="pill b-orange">{{ t.pendingReportCount }} 条待补报</span>

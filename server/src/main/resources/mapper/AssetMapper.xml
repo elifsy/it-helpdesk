@@ -3,8 +3,8 @@
 <mapper namespace="com.tzme.helpdesk.mapper.AssetMapper">
 
   <insert id="insert" useGeneratedKeys="true" keyProperty="id">
-    insert into it_asset(no,erp_no,name,model,category,sn,user_name,location,buy_date,warranty,warranty_end,status,remark,icon)
-    values(#{no},#{erpNo},#{name},#{model},#{category},#{sn},#{userName},#{location},#{buyDate},#{warranty},#{warrantyEnd},#{status},#{remark},#{icon})
+    insert into it_asset(no,erp_no,name,model,category,sn,user_name,user_id,location,buy_date,warranty,warranty_end,status,remark,icon)
+    values(#{no},#{erpNo},#{name},#{model},#{category},#{sn},#{userName},#{userId},#{location},#{buyDate},#{warranty},#{warrantyEnd},#{status},#{remark},#{icon})
   </insert>
 
   <select id="findByNo" resultType="com.tzme.helpdesk.domain.Asset">
@@ -19,12 +19,16 @@
       <if test="category != null">category = #{category},</if>
       <if test="sn != null">sn = #{sn},</if>
       <if test="userName != null">user_name = #{userName},</if>
+      user_id = #{userId},
       <if test="location != null">location = #{location},</if>
       <if test="warranty != null">warranty = #{warranty},</if>
       <if test="warrantyEnd != null">warranty_end = #{warrantyEnd},</if>
       <if test="status != null">status = #{status},</if>
       <if test="borrower != null">borrower = #{borrower},</if>
+      borrower_id = #{borrowerId},
       borrow_due = #{borrowDue},
+      borrow_soon_reminded_at = #{borrowSoonRemindedAt},
+      borrow_overdue_reminded_at = #{borrowOverdueRemindedAt},
       <if test="remark != null">remark = #{remark},</if>
       <if test="icon != null">icon = #{icon},</if>
       updated_at = now()
@@ -39,7 +43,9 @@
       <if test="keyword != null and keyword != ''">
         and (no like concat('%', #{keyword}, '%') or erp_no like concat('%', #{keyword}, '%') or name like concat('%', #{keyword}, '%')
              or model like concat('%', #{keyword}, '%')
-             or sn like concat('%', #{keyword}, '%') or user_name like concat('%', #{keyword}, '%'))
+             or sn like concat('%', #{keyword}, '%') or user_name like concat('%', #{keyword}, '%')
+             or exists (select 1 from sys_user u where u.id in (it_asset.user_id,it_asset.borrower_id)
+                 and (u.name like concat('%', #{keyword}, '%') or u.employee_no = #{keyword})))
       </if>
     </where>
   </sql>

@@ -57,14 +57,7 @@ public class ServiceContactService {
     }
 
     public List<Person> search(String keyword) {
-        String query = keyword.strip().toLowerCase(Locale.ROOT);
-        if (query.isEmpty()) return List.of();
-        return users.listActiveWithDing().stream()
-                .filter(ServiceContactService::hasDingTalk)
-                .filter(user -> user.getName().toLowerCase(Locale.ROOT).contains(query)
-                        || (user.getEmployeeNo() != null && user.getEmployeeNo().toLowerCase(Locale.ROOT).contains(query)))
-                .sorted(Comparator.comparing(User::getName).thenComparing(User::getId))
-                .limit(20)
+        return users.searchActivePeople(keyword, true).stream()
                 .map(user -> new Person(user.getId(), user.getName(), user.getDeptName(), user.getEmployeeNo()))
                 .toList();
     }

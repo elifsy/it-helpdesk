@@ -5,6 +5,8 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 
 @Mapper
 public interface AssetMapper {
@@ -35,4 +37,22 @@ public interface AssetMapper {
     long countByStatus(@Param("status") String status);
 
     long countAll();
+
+    @org.apache.ibatis.annotations.Select("select * from it_asset where status='借出中' and borrower_id=#{borrowerId} "
+            + "and borrow_due<=#{until} order by borrow_due,no")
+    List<Asset> borrowDueForUser(@Param("borrowerId") Long borrowerId, @Param("until") LocalDate until);
+
+    @org.apache.ibatis.annotations.Select("select a.* from it_asset a join sys_user u on u.id=a.borrower_id and u.status='ACTIVE' "
+            + "where a.status='借出中' and ((a.borrow_due<#{today} and a.borrow_overdue_reminded_at is null) "
+            + "or (a.borrow_due between #{today} and #{until} and a.borrow_soon_reminded_at is null)) "
+            + "order by a.borrow_due,a.no limit #{limit}")
+    List<Asset> findBorrowReminderCandidates(@Param("today") LocalDate today, @Param("until") LocalDate until, @Param("limit") int limit);
+
+    @org.apache.ibatis.annotations.Update("update it_asset set borrow_soon_reminded_at=#{now},updated_at=updated_at "
+            + "where no=#{no} and borrower_id=#{borrowerId} and borrow_due=#{due} and status='借出中' and borrow_soon_reminded_at is null")
+    int markBorrowSoon(@Param("no") String no, @Param("borrowerId") Long borrowerId, @Param("due") LocalDate due, @Param("now") LocalDateTime now);
+
+    @org.apache.ibatis.annotations.Update("update it_asset set borrow_overdue_reminded_at=#{now},updated_at=updated_at "
+            + "where no=#{no} and borrower_id=#{borrowerId} and borrow_due=#{due} and status='借出中' and borrow_overdue_reminded_at is null")
+    int markBorrowOverdue(@Param("no") String no, @Param("borrowerId") Long borrowerId, @Param("due") LocalDate due, @Param("now") LocalDateTime now);
 }

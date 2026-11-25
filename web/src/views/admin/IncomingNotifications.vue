@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { incomingNotificationApi } from '../../api'
 import type { IncomingNotificationConfig, IncomingNotificationRules, NotificationRecipient, TicketNotificationRule } from '../../api'
 import { TICKET_TYPES } from '../../config/ticket-types'
 import { ROLE_NAMES } from '../../config/menus'
 import { toast } from '../../utils/toast'
+import PersonPicker from '../../components/PersonPicker.vue'
 
 const ASSET_TYPES = [
   { value: 'RECEIVE', label: '设备领用' },
@@ -24,8 +25,6 @@ const type = ref<string>(TICKET_TYPES[0].v)
 const cat1 = ref('')
 const cat2 = ref('')
 const assetType = ref(ASSET_TYPES[0].value)
-const query = ref('')
-const showAll = ref(false)
 
 const dirty = computed(() => JSON.stringify(draft.value) !== JSON.stringify(config.value?.rules))
 const primaryCategories = computed(() => Object.keys(config.value?.categories[type.value] ?? {}))
@@ -42,16 +41,10 @@ const selectedIds = computed<number[]>(() => {
 const parentIds = computed(() => draft.value?.ticketRules.find(rule =>
   rule.type === type.value && rule.cat1 === cat1.value && !rule.cat2)?.recipientIds ?? [])
 const people = computed(() => new Map(config.value?.recipients.map(person => [person.id, person])))
-const matchingPeople = computed(() => {
-  const words = query.value.trim().toLowerCase().split(/\s+/).filter(Boolean)
-  return (config.value?.recipients ?? []).filter(person =>
-    words.every(word => `${person.name} ${person.department ?? ''} ${person.employeeNo ?? ''}`.toLowerCase().includes(word)))
-})
-const visiblePeople = computed(() => showAll.value ? matchingPeople.value : matchingPeople.value.slice(0, 12))
+const availablePeople = computed(() => (config.value?.recipients ?? [])
+  .filter(person => !selectedIds.value.includes(person.id))
+  .map(person => ({ ...person, description: ROLE_NAMES[person.role] })))
 const selectionEnabled = computed(() => tab.value === 'asset' || !!cat1.value)
-
-watch([tab, type, cat1, cat2, assetType], () => { query.value = '' })
-watch(query, () => { showAll.value = false })
 
 function chooseType(value: string) {
   type.value = value
@@ -206,23 +199,10 @@ onMounted(load)
           </p>
           <p v-else-if="tab === 'ticket'" class="hint">未设置接收人时，通知有工单受理权限的 IT 和管理员。</p>
           <p v-else class="hint">未设置接收人时，沿用当前审批流程的通知。选择人员后，钉钉审批也会发送来单提醒。</p>
-          <label class="person-search">
-            搜索 IT 或管理员
-            <input v-model="query" class="inp" type="search" placeholder="姓名、部门或工号">
-          </label>
+          <PersonPicker :key="JSON.stringify([tab, type, cat1, cat2, assetType])" class="person-search" label="搜索 IT 或管理员"
+            :options="availablePeople" :disabled="saving || selectedIds.length >= LIMIT" clear-after-select
+            @select="toggleRecipient($event.id)" />
           <p v-if="!config.recipients.length" class="hint">暂无在职且已绑定钉钉的 IT 或管理员。</p>
-          <p v-else-if="!matchingPeople.length" class="hint">没有找到匹配的 IT 或管理员。</p>
-          <div v-else class="people-grid">
-            <label v-for="person in visiblePeople" :key="person.id" class="person-option">
-              <input type="checkbox" :checked="selectedIds.includes(person.id)"
-                :disabled="selectedIds.length >= LIMIT && !selectedIds.includes(person.id)"
-                @change="toggleRecipient(person.id)">
-              <span><strong>{{ person.name }}</strong><small v-if="recipientLabel(person)">{{ recipientLabel(person) }}</small></span>
-            </label>
-          </div>
-          <button v-if="!showAll && matchingPeople.length > visiblePeople.length" type="button" class="btn more-people" @click="showAll = true">
-            显示全部 {{ matchingPeople.length }} 人
-          </button>
           <p v-if="selectedIds.length >= LIMIT" class="hint">每条规则最多选择 {{ LIMIT }} 人。</p>
         </section>
       </fieldset>
@@ -252,17 +232,15 @@ onMounted(load)
 .page-header p, .hint { margin: 6px 0 0; color: var(--muted, #656b75); font-size: 13px; }
 .notification-error { margin: 0; color: #b42318; }
 .rule-editor { margin: 0; min-width: 0; border: 0; }
-.rule-fields, .people-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); }
+.rule-fields { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); }
 .rule-fields { margin: 16px 0; }
-.rule-fields label, .person-search { display: grid; gap: 6px; font-size: 13px; font-weight: 600; }
-.rule-fields .inp, .person-search .inp { width: 100%; }
+.rule-fields label { display: grid; gap: 6px; font-size: 13px; font-weight: 600; }
+.rule-fields .inp { width: 100%; }
 .recipient-section { border-top: 1px solid var(--line, #e4e7ec); padding-top: 16px; }
 .recipient-count { color: var(--muted, #656b75); font-size: 13px; font-weight: normal; margin-left: 6px; }
 .person-search { max-width: 420px; margin: 14px 0 10px; }
-.person-option { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line, #e4e7ec); border-radius: 10px; cursor: pointer; padding: 10px; }
-.person-option span { min-width: 0; overflow-wrap: anywhere; }
-.person-option small, .configured-rules small { display: block; color: var(--muted, #656b75); margin-top: 3px; }
-.more-people, .selected-people { margin-top: 10px; }
+.configured-rules small { display: block; color: var(--muted, #656b75); margin-top: 3px; }
+.selected-people { margin-top: 10px; }
 .selected-person { font: inherit; color: #0668cc; background: #edf5ff; border: 0; border-radius: 16px; padding: 4px 10px; cursor: pointer; }
 .configured-rules ul { padding: 0; margin: 10px 0 0; list-style: none; }
 .configured-rules li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line, #e4e7ec); }

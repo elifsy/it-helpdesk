@@ -23,8 +23,9 @@ public class AssetRequestController {
     @com.tzme.helpdesk.security.RequiresPermission({"request.view.own","request.view.all"})
     public ApiResponse<List<AssetRequest>> list(@RequestParam(required = false) String status,
                                                @RequestParam(required = false) Boolean mine,
-                                               @RequestParam(required = false) String type) {
-        return ApiResponse.ok(service.list(status, mine, type));
+                                               @RequestParam(required = false) String type,
+                                               @RequestParam(required = false) String no) {
+        return ApiResponse.ok(service.list(status, mine, type, no));
     }
 
     @PostMapping

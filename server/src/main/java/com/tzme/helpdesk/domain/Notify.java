@@ -1,5 +1,6 @@
 package com.tzme.helpdesk.domain;
 
+import com.tzme.helpdesk.dto.NotificationAction;
 import lombok.Data;
 
 import java.time.LocalDateTime;
@@ -15,4 +16,5 @@ public class Notify {
     private String refNo;
     private Integer isRead;
     private LocalDateTime createdAt;
+    private NotificationAction action;
 }

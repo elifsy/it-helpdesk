@@ -12,8 +12,8 @@ interface PickerAsset {
   status: string
   sn?: string | null
   location?: string | null
-  userName?: string | null
-  borrower?: string | null
+  userId?: number | null
+  borrowerId?: number | null
   /** 指定图标 key（采购目录可配）；为空时按分类+名称自动匹配 */
   icon?: string | null
 }
@@ -25,8 +25,8 @@ const props = withDefaults(defineProps<{
   loading?: boolean
   categoryLabel?: string
   emptyText?: string
-  /** 当前使用人：命中 userName/borrower 的设备标「我的设备」并优先排序 */
-  myName?: string
+  /** 本人使用或借用的设备优先展示。 */
+  myId?: number
   /** 统计口径后缀，如「台可选设备」/「个可申请型号」 */
   countSuffix?: string
   /** 是否显示卡片上的编号行（采购目录没有资产编号） */
@@ -35,12 +35,12 @@ const props = withDefaults(defineProps<{
   searchPlaceholder?: string
 }>(), {
   loading: false, categoryLabel: '资产分类', emptyText: '该分类下暂无可选设备，可切换其他分类查看。',
-  myName: '', countSuffix: '台可选设备', showNo: true, selectLabel: '选择这台设备',
+  countSuffix: '台可选设备', showNo: true, selectLabel: '选择这台设备',
   searchPlaceholder: '搜索设备名称 / 型号 / 编号'
 })
 /** 是否为「我的设备」（本人领用或本人借用） */
 function mine(asset: PickerAsset) {
-  return !!props.myName && (asset.userName === props.myName || asset.borrower === props.myName)
+  return props.myId != null && (asset.userId === props.myId || asset.borrowerId === props.myId)
 }
 const emit = defineEmits<{ 'update:modelValue': [value: string]; 'update:category': [value: string] }>()
 const keyword = ref('')
@@ -57,7 +57,7 @@ const categoryOptions = computed(() => {
 const inCategory = computed(() => {
   const list = props.assets.filter(asset => !props.category || asset.category === props.category)
   // 我的设备排在前面，方便在长列表里直接找到
-  return props.myName ? [...list].sort((a, b) => Number(mine(b)) - Number(mine(a))) : list
+  return props.myId != null ? list.sort((a, b) => Number(mine(b)) - Number(mine(a))) : list
 })
 const shown = computed(() => {
   const query = keyword.value.trim().toLowerCase()
