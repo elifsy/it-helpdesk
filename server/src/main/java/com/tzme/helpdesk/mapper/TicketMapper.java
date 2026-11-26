@@ -5,6 +5,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
+import java.time.LocalDate;
 import java.util.Map;
 import java.time.LocalDateTime;
 
@@ -36,7 +37,8 @@ public interface TicketMapper {
                       @Param("cat1") String cat1,
                       @Param("assetNo") String assetNo,
                       @Param("offset") int offset,
-                      @Param("size") int size);
+                      @Param("size") int size,
+                      @Param("supplementDate") LocalDate supplementDate);
 
     long count(@Param("status") String status,
                @Param("open") Boolean open,

@@ -4,6 +4,7 @@ import com.tzme.helpdesk.common.CurrentUser;
 import com.tzme.helpdesk.domain.Asset;
 import com.tzme.helpdesk.job.ScheduledJobs;
 import com.tzme.helpdesk.mapper.AssetMapper;
+import com.tzme.helpdesk.mapper.MissingReportMapper;
 import com.tzme.helpdesk.mapper.UserMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -21,17 +22,29 @@ public class BorrowDueService {
     private final AssetMapper assets;
     private final UserMapper users;
     private final NotifyService notify;
+    private final MissingReportMapper reports;
 
-    public record DueAssets(List<Asset> upcoming, List<Asset> overdue, int advanceDays) { }
+    public record DueAssets(List<Asset> upcoming, List<Asset> overdue, int advanceDays,
+                            List<String> returnSupplementAssets) { }
+
+    static LocalDate today() {
+        return LocalDate.now(ScheduledJobs.ZONE);
+    }
+
+    static boolean isOverdue(Asset asset, Long borrowerId, LocalDate today) {
+        return "借出中".equals(asset.getStatus()) && borrowerId.equals(asset.getBorrowerId())
+                && asset.getBorrowDue() != null && asset.getBorrowDue().isBefore(today);
+    }
 
     public DueAssets mine() {
-        LocalDate today = LocalDate.now(ScheduledJobs.ZONE);
+        LocalDate today = today();
+        Long userId = CurrentUser.require().id();
         var upcoming = new ArrayList<Asset>();
         var overdue = new ArrayList<Asset>();
-        for (Asset asset : assets.borrowDueForUser(CurrentUser.require().id(), today.plusDays(ADVANCE_DAYS))) {
+        for (Asset asset : assets.borrowDueForUser(userId, today.plusDays(ADVANCE_DAYS))) {
             (asset.getBorrowDue().isBefore(today) ? overdue : upcoming).add(asset);
         }
-        return new DueAssets(upcoming, overdue, ADVANCE_DAYS);
+        return new DueAssets(upcoming, overdue, ADVANCE_DAYS, reports.pendingReturnAssets(userId));
     }
 
     @Transactional

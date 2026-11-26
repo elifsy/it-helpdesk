@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PendingReportBadges from '../../components/PendingReportBadges.vue'
 /**
  * 采购管理（IT/管理员）：
  * 申请单审批 → 逐条明细处理（库存配发 / 转采购 → 到货配发 → 逐台交付）。
@@ -315,7 +316,7 @@ onMounted(() => {
 
         <div class="small muted pr-meta">
           {{ r.applicant }}（{{ r.dept }}）· {{ r.createdAt }}<br />
-          <template v-if="r.pendingReportCount"><span class="pill b-orange">{{ r.pendingReportCount }} 条待补报</span><br /></template>
+          <PendingReportBadges :counts="r.pendingByType" :repair-count="r.pendingReportCount" />
           事由：{{ r.reason }}
           <template v-if="r.dingInstanceId"><br />钉钉审批：<span class="mono">{{ r.dingInstanceId }}</span><template v-if="r.dingMessage"> · {{ r.dingMessage }}</template></template>
           <template v-if="r.approver"><br />审批人：{{ r.approver }} · {{ r.handledAt }}</template>

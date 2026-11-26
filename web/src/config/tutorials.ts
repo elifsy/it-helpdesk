@@ -48,9 +48,9 @@ const personal = [
     step('搜索已有处理办法', '输入 WiFi、打印机或 VPN 等关键词，可从联想结果选择相关条目，也可以按分类浏览。', '.kb-search'),
     step('打开条目自查', '点开后核对适用场景，再按正文尝试处理。报修表单也可能推荐匹配的条目。', '.cats'),
   ]),
-  course('my-supplement', '我的待补报事项', '/missing-reports', '我的服务', [
-    step('核对需要补报的事项', 'IT 已通过电话或消息处理的紧急事项会列在这里。打开可核对处理时间、说明和佐证。', '.report-heading'),
-    step('填写补报表单', '在详情填写故障位置、问题类型与分类，再提交补报。成功后会生成可查看的工单。', '.report-row'),
+  course('my-supplement', '我的待补交事项', '/missing-reports', '我的服务', [
+    step('核对待补交事项', 'IT 登记的报修、资产领用、借用、更换和归还都在这里。打开可核对处理说明、设备和佐证。', '.report-heading'),
+    step('填写并确认提交', '报修需填写故障位置和分类。资产补交需核对设备和申请事由，提交后系统同步更新设备台账。', '.report-row'),
   ]),
 ]
 
@@ -81,9 +81,9 @@ const approvals = course('approvals', '资产申请', '/admin/approvals', '资�
   step('筛选资产申请', '从「待审批」看新申请，或切到「全部」查历史。打开后核对设备、申请人和事由。', '.filters'),
   step('审批并确认交接', '按申请类型核对设备后再审批。需交接的设备在实际领取或归还后，按提示确认。', '.page-h', 'request.approve'),
 ])
-const supplement = course('supplement', '紧急事项补报', '/admin/missing-reports', '服务台', [
-  step('登记已完成的紧急事项', '选择实际需求人，填写标题、沟通方式、处理完成时间和说明，并上传聊天截图或通话佐证。', '.report-heading'),
-  step('跟进补报或修正误登记', '需求人会在首页看到补报提醒。点开记录查看结果，误登记可在详情撤销。', '.report-heading'),
+const supplement = course('supplement', '补报与补交登记', '/admin/missing-reports', '服务台', [
+  step('登记线下已办理事项', '选择需求人与事项类型。资产事项要选关联设备，借用要填归还日期，更换要选新设备。填写办理情况并上传佐证。', '.report-heading'),
+  step('跟进补交或撤销误登记', '需求人会在首页看到提醒。点开记录可查看提交结果，误登记可在详情撤销。', '.report-heading'),
 ])
 const statistics = course('statistics', '统计看板', '/admin/stats', '资产与知识', [
   step('查看服务指标', '从顶部看工单量、超时和 SLA 达成率，再结合趋势判断积压。', '.kpis'),
@@ -124,19 +124,10 @@ const management = [
     step('查看同步结果', '到资产申请页查看钉钉审批进度。在有权限时可手动同步。', '.panel'),
   ]),
   course('settings', '运行配置', '/admin/config', '系统管理', [
-    step('核对服务开关', '维护报修能力和资产交接确认等选项，核对适用流程后保存。', '.page-head'),
-  ]),
-  course('sla', 'SLA 与优先级', '/admin/config?tab=sla', '系统管理', [
-    step('设置工作日历与时限', '配置工作日、节假日和工作时间，再设置各优先级的首次响应与解决时限。', '.field-grid'),
+    step('配置资产交接确认', '按资产业务选择需要线下交接的设备分类，核对适用流程后保存。', '.page-head'),
   ]),
   course('dictionary', '字典与分类', '/admin/config?tab=dict', '系统管理', [
     step('按问题类型配置分类', '分别维护故障报修、服务申请和咨询的分类，核对各子分类归属后保存。', '.toolbar'),
-  ]),
-  course('audit', '审计日志', '/admin/config?tab=audit', '系统管理', [
-    step('查找管理操作', '用操作人、动作或对象搜索，再核对操作时间和处理人。', '.toolbar'),
-  ]),
-  course('storage', '附件与存储', '/admin/config?tab=storage', '系统管理', [
-    step('检查上传限制', '核对允许上传的附件数量与大小，结合报修和证据附件的常用体积设置。', '.page-head'),
   ]),
 ]
 

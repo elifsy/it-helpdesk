@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import PendingReportBadges from '../components/PendingReportBadges.vue'
+import { computed, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { metaApi, attachmentApi, ticketApi } from '../api'
 import { useAuthStore } from '../stores/auth'
@@ -13,6 +14,7 @@ import {
 } from '../utils/dict'
 import { toast } from '../utils/toast'
 import { ticketQueueText } from '../utils/ticketQueue'
+import AttachmentFolder from '../components/AttachmentFolder.vue'
 import PersonPicker from '../components/PersonPicker.vue'
 import type { PersonOption } from '../utils/people-search'
 
@@ -29,9 +31,14 @@ const engineers = ref<PersonOption[]>([])
 const categoriesByType = ref<Record<string, Record<string, string[]>>>({})
 const busy = ref(false)
 const attachments = ref<any[]>([])
+const pendingAttachments = shallowRef<File[]>([])
+const uploadError = ref('')
 const uploading = ref(false)
 const runtime = ref({ maxAttachments: 3, maxUploadMb: 5, kbRecommendEnabled: true, requireSolutionCode: true })
+const attachmentSlots = computed(() => Math.max(0, runtime.value.maxAttachments - attachments.value.length))
 let loadVersion = 0
+let attachmentVersion = 0
+let uploadVersion = 0
 let progressVersion = 0
 let progressTimer: ReturnType<typeof setInterval> | undefined
 const progressRefreshing = ref(false)
@@ -41,7 +48,7 @@ function releaseAttachments() {
   attachments.value = []
 }
 onUnmounted(() => {
-  loadVersion++; progressVersion++; releaseAttachments()
+  loadVersion++; uploadVersion++; progressVersion++; releaseAttachments()
   clearInterval(progressTimer)
   document.removeEventListener('visibilitychange', refreshVisibleProgress)
 })
@@ -96,6 +103,8 @@ async function load() {
 }
 
 async function loadAttachments(no = String(route.params.no), version = loadVersion) {
+  const request = ++attachmentVersion
+  const isCurrent = () => version === loadVersion && request === attachmentVersion
   attachmentLoading.value = true
   attachmentError.value = ''
   try {
@@ -104,14 +113,14 @@ async function loadAttachments(no = String(route.params.no), version = loadVersi
       try { return { ...a, url: URL.createObjectURL(await attachmentApi.blob(a.storedName)) } }
       catch { return { ...a, url: '' } }
     }))
-    if (version !== loadVersion) { loaded.forEach(a => { if (a.url) URL.revokeObjectURL(a.url) }); return }
+    if (!isCurrent()) { loaded.forEach(a => { if (a.url) URL.revokeObjectURL(a.url) }); return }
     releaseAttachments()
     attachments.value = loaded
     if (loaded.some(a => !a.url)) attachmentError.value = '部分附件加载失败，请重试'
   } catch {
-    if (version === loadVersion) attachmentError.value = '附件加载失败，请重试'
+    if (isCurrent()) attachmentError.value = '附件加载失败，请重试'
   } finally {
-    if (version === loadVersion) attachmentLoading.value = false
+    if (isCurrent()) attachmentLoading.value = false
   }
 }
 
@@ -139,28 +148,32 @@ function isImage(a: any) {
   return /^image\//.test(a?.contentType || '')
 }
 
-async function onUpload(e: Event) {
-  const input = e.target as HTMLInputElement
-  const list = Array.from(input.files || [])
-  input.value = ''
-  if (!list.length || !t.value) return
-  uploading.value = true
-  let failed = 0
-  for (const f of list) {
-    if (f.size > runtime.value.maxUploadMb * 1024 * 1024) {
-      toast(`${f.name} 超过 ${runtime.value.maxUploadMb}MB`)
-      failed++
-      continue
-    }
-    try {
-      await attachmentApi.upload(f, 'TICKET', t.value.no)
-    } catch {
-      failed++
-    }
+async function uploadAttachments() {
+  const no = t.value?.no
+  const list = pendingAttachments.value
+  if (!no || !canUpload.value || uploading.value || attachmentLoading.value || !list.length) return
+  if (list.length > attachmentSlots.value) {
+    uploadError.value = `当前还可上传 ${attachmentSlots.value} 个附件，请先移除多选的文件。`
+    return
   }
-  uploading.value = false
-  toast(failed ? `有 ${failed} 个附件上传失败` : '附件已上传')
-  await load()
+  const version = ++uploadVersion
+  uploading.value = true
+  uploadError.value = ''
+  const failed: File[] = []
+  try {
+    for (const file of list) {
+      if (version !== uploadVersion || !canUpload.value) return
+      try { await attachmentApi.upload(file, 'TICKET', no) }
+      catch { failed.push(file) }
+    }
+    if (version !== uploadVersion) return
+    pendingAttachments.value = failed
+    if (failed.length) uploadError.value = `${failed.length} 个附件上传失败，已留在文件夹中，可以重试。`
+    else toast('附件已上传')
+    await loadAttachments(no)
+  } finally {
+    if (version === uploadVersion) uploading.value = false
+  }
 }
 
 async function init() {
@@ -179,7 +192,14 @@ onMounted(() => {
   progressTimer = setInterval(refreshVisibleProgress, 30000)
   document.addEventListener('visibilitychange', refreshVisibleProgress)
 })
-watch(() => route.params.no, () => { detail.value = null; releaseAttachments(); void load() })
+watch([() => route.params.no, () => auth.user?.id], () => {
+  uploadVersion++
+  uploading.value = false
+  pendingAttachments.value = []
+  uploadError.value = ''
+  detail.value = null
+  void load()
+})
 
 function openDlg(kind: typeof dlg.value) {
   dlg.value = kind
@@ -358,7 +378,7 @@ async function submitRate() {
         <div class="kv"><span>分类</span><b>{{ t.cat1 }} · {{ t.cat2 || '—' }}</b></div>        <div v-if="t.categoryNote" class="kv category-note"><span>分类补充</span><b>{{ t.categoryNote }}</b></div>
         <div class="kv"><span>类型</span><b>{{ TICKET_TYPE_NAME[t.type] || t.type }}</b></div>
         <div class="kv"><span>影响</span><b>{{ IMPACT_NAME[t.impact] }} · {{ WORK_NAME[t.workImpact] }}</b></div>
-        <div class="kv"><span>报修人</span><b>{{ t.creatorName }}（{{ t.deptName }}）<span v-if="t.pendingReportCount" class="pill b-orange">{{ t.pendingReportCount }} 条待补报</span></b></div>
+        <div class="kv"><span>报修人</span><b>{{ t.creatorName }}（{{ t.deptName }}）<PendingReportBadges :counts="t.pendingByType" :repair-count="t.pendingReportCount" /></b></div>
         <div class="kv"><span>故障位置</span><b class="ticket-location">{{ t.location || '—' }}</b></div>
         <div class="kv"><span>工程师</span><b>{{ t.assigneeName || '待接单' }}</b></div>
         <div class="kv"><span>提交</span><b>{{ t.createdAt }}</b></div>
@@ -376,11 +396,6 @@ async function submitRate() {
         <div class="row">
           <b style="font-size: 13.5px">附件</b>
           <span class="small muted" v-if="attachments.length">（{{ attachments.length }}）</span>
-          <span class="sp" />
-          <label v-if="canUpload" class="btn sm" style="cursor: pointer">
-            {{ uploading ? '上传中…' : '上传附件' }}
-            <input type="file" accept="image/*,application/pdf" multiple hidden @change="onUpload" />
-          </label>
         </div>
         <div v-if="attachmentLoading" class="small muted" style="margin-top: 9px">附件加载中…</div>
         <div v-else-if="attachmentError" class="attachment-error small" role="alert">
@@ -401,6 +416,18 @@ async function submitRate() {
             <div class="nm">{{ a.fileName }}</div>
           </a>
         </div>
+        <div v-if="canUpload && (attachmentSlots || pendingAttachments.length)" class="attachment-upload">
+          <AttachmentFolder v-model="pendingAttachments" :max-files="attachmentSlots" :max-file-mb="runtime.maxUploadMb"
+            :disabled="uploading || attachmentLoading" />
+          <div class="attachment-upload-actions">
+            <small class="muted">还可上传 {{ attachmentSlots }} 个附件，单个 ≤{{ runtime.maxUploadMb }} MB</small>
+            <button v-if="pendingAttachments.length" type="button" class="btn pri sm" :disabled="uploading || attachmentLoading" @click="uploadAttachments">
+              {{ uploading ? '上传中…' : '上传附件' }}
+            </button>
+          </div>
+          <p v-if="uploadError && pendingAttachments.length" class="small attachment-error" role="alert">{{ uploadError }}</p>
+        </div>
+        <p v-else-if="canUpload && !attachmentLoading" class="small muted attachment-upload">附件已达上传上限。</p>
       </div>
 
       <div v-if="actions.length" class="ops">
@@ -602,6 +629,8 @@ async function submitRate() {
 .category-note b { min-width:0; overflow-wrap:anywhere; }
 .detail-error .btn { margin:6px; }
 .attachment-error { margin-top:9px; color:var(--red, #c9362b); }
+.attachment-upload { margin:10px 0 0; }
+.attachment-upload-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; margin-top:8px; }
 .queue-panel { margin-top:16px; padding:13px 14px; border-radius:12px; background:var(--brand-l, #eef6ff); }
 .queue-heading { font-size:12px; color:var(--t2); }.queue-panel .btn { flex-shrink:0; white-space:nowrap; }
 .queue-summary { margin:9px 0 0; color:var(--brand); font-size:14px; font-weight:600; line-height:1.7; overflow-wrap:anywhere; }

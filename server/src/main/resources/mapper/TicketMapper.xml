@@ -2,6 +2,11 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.tzme.helpdesk.mapper.TicketMapper">
 
+  <resultMap id="ticketWithSupplements" type="com.tzme.helpdesk.domain.Ticket" autoMapping="true">
+    <id property="id" column="id"/>
+    <association property="pendingByType" resultMap="com.tzme.helpdesk.mapper.MissingReportMapper.pendingCounts"/>
+  </resultMap>
+
   <insert id="insert" useGeneratedKeys="true" keyProperty="id">
     insert into it_ticket(no,title,description,type,cat1,cat2,category_note,impact,work_impact,priority,status,
       asset_no,creator_id,creator_name,dept_name,location,assignee_id,assignee_name,source,
@@ -74,10 +79,14 @@
     </where>
   </sql>
 
-  <select id="list" resultType="com.tzme.helpdesk.domain.Ticket">
-    select it_ticket.*, (select count(*) from it_missing_report m
-      where m.requester_id=it_ticket.creator_id and m.status='PENDING') as pending_report_count
+  <select id="list" resultMap="ticketWithSupplements">
+    select it_ticket.*
+    <if test="supplementDate != null">, supplements.*</if>
     from it_ticket
+    <if test="supplementDate != null">
+      <include refid="com.tzme.helpdesk.mapper.MissingReportMapper.pendingByRequester"/>
+        on supplements.supplement_requester_id=it_ticket.creator_id
+    </if>
     <include refid="filter"/>
     order by
       case status

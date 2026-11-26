@@ -22,7 +22,7 @@ public class RolePermissionService {
     private final AuditService audit;
     public RolePermissionsReq config() {
         String value=mapper.setting("role-permissions");
-        if(value!=null) return inheritSelfService(read(value));
+        if (value != null) return effectiveConfig(read(value));
         RolePermissionsReq result=new RolePermissionsReq();
         Roles.CONFIGURABLE.forEach(role -> result.getAssignments().put(role,Permissions.defaults(role)));
         result.setSelfServiceVersion(1);
@@ -39,7 +39,8 @@ public class RolePermissionService {
     public Map<String,Object> describe() {
         RolePermissionsReq config=config();
         Map<String,List<String>> defaults=new LinkedHashMap<>(); Roles.CONFIGURABLE.forEach(role -> defaults.put(role,Permissions.defaults(role)));
-        return Map.of("roles",Roles.CONFIGURABLE,"roleNames",Roles.LABELS,"capabilities",Permissions.CATALOG,
+        var capabilities = Permissions.CATALOG.stream().filter(cap -> Permissions.canGrant("ADMIN", cap.key())).toList();
+        return Map.of("roles",Roles.CONFIGURABLE,"roleNames",Roles.LABELS,"capabilities",capabilities,
                 "revision",config.getRevision(),"assignments",config.getAssignments(),"defaults",defaults,"selfServiceVersion",config.getSelfServiceVersion(),"selfServicePermissions",Permissions.SELF_SERVICE);
     }
     @Transactional public Map<String,Object> save(RolePermissionsReq input) {
@@ -50,7 +51,7 @@ public class RolePermissionService {
         inheritSelfService(input);
         validate(input);
         mapper.createSetting("role-permissions",write(config()));
-        RolePermissionsReq previous=inheritSelfService(read(mapper.lockSetting("role-permissions")));
+        RolePermissionsReq previous=effectiveConfig(read(mapper.lockSetting("role-permissions")));
         if(!previous.getRevision().equals(input.getRevision())) throw new BizException(409,"权限已被其他管理员修改，请重新加载后再保存");
         input.setRevision(previous.getRevision()+1);
         mapper.updateSetting("role-permissions",write(input));
@@ -70,12 +71,18 @@ public class RolePermissionService {
         input.getAssignments().forEach((role,keys) -> {
             if(keys==null || keys.size()!=new HashSet<>(keys).size() || keys.stream().anyMatch(key -> !known.containsKey(key))) throw new BizException("权限标识不合法或重复");
             for(String key:keys) {
+                if (!Permissions.canGrant(role, key)) throw new BizException(Roles.LABELS.get(role)+"不能分配权限："+known.get(key).name());
                 if(!keys.containsAll(known.get(key).requires())) throw new BizException(Roles.LABELS.get(role)+"的权限缺少依赖："+known.get(key).name());
                 if("VIEWER".equals(role) && !known.get(key).readOnly() && !Permissions.SELF_SERVICE.contains(key)) throw new BizException("可查看用户只能办理本人业务，管理功能仅可查看");
                 if("role.manage".equals(key) && !"ADMIN".equals(role)) throw new BizException("角色权限配置仅允许管理员使用");
             }
         });
         if(!input.getAssignments().get("ADMIN").contains("role.manage")) throw new BizException("必须保留管理员的角色权限配置权限");
+    }
+    private RolePermissionsReq effectiveConfig(RolePermissionsReq config) {
+        inheritSelfService(config);
+        Roles.CONFIGURABLE.forEach(role -> config.getAssignments().computeIfPresent(role, Permissions::allowedForRole));
+        return config;
     }
     private RolePermissionsReq inheritSelfService(RolePermissionsReq config) {
         if (Integer.valueOf(1).equals(config.getSelfServiceVersion())) return config;

@@ -91,8 +91,8 @@ public class PurchaseService {
     public List<PurchaseRequest> list(String status, Boolean mine, String no) {
         LoginUser u = CurrentUser.require();
         boolean mineFlag = Boolean.TRUE.equals(mine) || u.isEmployeeOnly();
-        List<PurchaseRequest> rows = requestMapper.list(status, u.name(), u.id(), mineFlag, no);
-        if (!com.tzme.helpdesk.security.Roles.isItOrAdmin(u.role())) rows.forEach(row -> row.setPendingReportCount(null));
+        List<PurchaseRequest> rows = requestMapper.list(status, u.name(), u.id(), mineFlag, no,
+                MissingReportGuard.staffCountDate(u));
         for (PurchaseRequest r : rows) attachItems(r);
         return rows;
     }

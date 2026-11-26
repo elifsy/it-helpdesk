@@ -22,7 +22,9 @@ async function load() {
   finally { loading.value = false }
 }
 function locked(role: string, capability: Capability) {
-  return (capability.key === 'role.manage') || (role === 'VIEWER' && !capability.readOnly && !policy.value?.selfServicePermissions.includes(capability.key))
+  return capability.key === 'role.manage'
+    || (role === 'USER' && (capability.key === 'ticket.view.all' || capability.requires.includes('ticket.view.all')))
+    || (role === 'VIEWER' && !capability.readOnly && !policy.value?.selfServicePermissions.includes(capability.key))
 }
 function toggle(role: string, key: string, enabled: boolean) {
   const data = policy.value!
@@ -82,7 +84,7 @@ onMounted(load)
           <button class="reset" :disabled="saving" @click="reset(role)">恢复默认</button>
         </div>
       </div>
-      <p class="permission-note">各角色默认拥有本人的报修、资产申请与知识反馈功能；可查看用户办理本人业务，对管理数据仅查看。勾选操作权限会补齐依赖，取消查看权限会取消依赖操作；管理员的权限配置入口始终保留。</p>
+      <p class="permission-note">普通用户仅可查看和办理本人工单。各角色默认拥有本人的报修、资产申请与知识反馈功能；可查看用户办理本人业务，对管理数据仅查看。勾选操作权限会补齐依赖，取消查看权限会取消依赖操作；管理员的权限配置入口始终保留。</p>
       <div class="table-wrap">
         <table class="tb permission-matrix">
           <thead><tr><th>功能权限</th><th v-for="role in policy.roles" :key="role">{{ policy.roleNames[role] }}</th></tr></thead>

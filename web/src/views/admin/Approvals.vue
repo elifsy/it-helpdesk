@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PendingReportBadges from '../../components/PendingReportBadges.vue'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { assetApi, assetCategoryApi, assetRequestApi, dingApprovalApi, type AssetCategory } from '../../api'
@@ -193,7 +194,7 @@ async function doReject(r: any) {
         <div class="small muted" style="margin-top: 5px; line-height: 1.8">
           分类：{{ r.assetCategory || '—' }}<br />
           申请人：{{ r.applicant }}（{{ r.dept }}）<br />
-          <template v-if="r.pendingReportCount"><span class="pill b-orange">{{ r.pendingReportCount }} 条待补报</span><br /></template>
+          <PendingReportBadges :counts="r.pendingByType" :repair-count="r.pendingReportCount" />
           事由：{{ r.reason }}
           <template v-if="r.expectReturn"><br />约定归还：{{ r.expectReturn }}</template>
           <template v-if="r.newAssetNo"><br />替换新机：{{ r.newAssetNo }}</template>

@@ -92,7 +92,7 @@ export function controlLabel(node: HTMLElement): string {
   if (node.matches('.dlg .stars > span') && node.parentElement) return (Array.from(node.parentElement.children).indexOf(node) + 1) + ' 星'
   if (node.matches('.category-option')) return node.dataset.category || '全部分类'
   const field = node.matches('input,select,textarea')
-  const text = node.getAttribute('aria-label') || (node.classList.contains('device-option') && node.querySelector('h5')?.textContent)
+  const text = node.getAttribute('aria-label') || (node.classList.contains('device-option') && node.querySelector('.device-name')?.textContent)
     || (field && (node as HTMLInputElement).labels?.[0]?.querySelector('.lb')?.textContent)
     || (field && (node as HTMLInputElement).labels?.[0]?.childNodes[0]?.textContent)
     || (field && node.closest('.fld,.field')?.querySelector('.lb')?.textContent)

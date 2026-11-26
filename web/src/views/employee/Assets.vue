@@ -3,24 +3,33 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { assetApi, assetCategoryApi, assetRequestApi, purchaseApi, type AssetCategory, type BorrowDueList } from '../../api'
 import { useAuthStore } from '../../stores/auth'
+import { useMissingReportStore } from '../../stores/missingReports'
 import { assetActions, eligibleAssets } from '../../utils/assets'
 import { ASSET_STATUS_CLASS, HANDOVER_HINT, HANDOVER_NAME, PR_ITEM_STATUS_CLASS, PR_ITEM_STATUS_NAME, PR_STATUS_CLASS, PR_STATUS_NAME, REQ_STATUS_CLASS, REQ_STATUS_NAME, REQ_TYPE } from '../../utils/dict'
+import { autoIconKey } from '../../utils/deviceIcons'
 import { toast } from '../../utils/toast'
 import { notificationReference } from '../../utils/notification-links'
 import { tutorialWorkflow } from '../../utils/tutorialPractice'
 import PurchaseFlow from '../../components/PurchaseFlow.vue'
 import AssetRequestFlow from '../../components/AssetRequestFlow.vue'
+import DeviceIcon from '../../components/DeviceIcon.vue'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const practiceType = tutorialWorkflow.value
+const reportState = useMissingReportStore()
+const restricted = computed(() => !practiceType && !!reportState.summary?.blocked)
 const returnAsset = computed(() => notificationReference(route.query.returnAsset))
 const dueAssets = ref<BorrowDueList>()
-const dueLists = computed(() => [
-  { key: 'overdue', name: '已逾期', rows: dueAssets.value?.overdue || [] },
-  { key: 'upcoming', name: '即将到期', rows: dueAssets.value?.upcoming || [] }
-].filter(group => group.rows.length))
+const dueError = ref('')
+const dueSection = ref<HTMLElement>()
+const returnSupplements = computed(() => dueAssets.value?.returnSupplementAssets || [])
+watch([dueSection, () => route.query.tab], ([section, tab], _previous, onCleanup) => {
+  if (!section || tab !== 'overdue') return
+  const frame = requestAnimationFrame(() => section.scrollIntoView({ block: 'start' }))
+  onCleanup(() => cancelAnimationFrame(frame))
+}, { flush: 'post' })
 const focusedApplication = computed(() => {
   const request = notificationReference(route.query.request)
   if (request) return { kind: 'asset', no: request }
@@ -34,6 +43,7 @@ const focusLoading = ref(false)
 const focusError = ref('')
 let focusVersion = 0
 const assets = ref<any[]>([])
+const requestAssets = computed(() => restricted.value ? dueAssets.value?.overdue || [] : assets.value)
 const categories = ref<AssetCategory[]>([])
 const category = ref('')
 const requests = ref<any[]>([])
@@ -58,13 +68,24 @@ let deviceVersion = 0
 let loadVersion = 0
 const myId = computed(() => auth.user?.id)
 const filteredAssets = computed(() => assets.value.filter(a => !category.value || a.category === category.value))
-/** 本人待审批申请涉及的设备，选择设备时排除，避免重复提交 */
-const pendingNos = computed(() => requests.value
-  .filter(r => r.status !== 'COMPLETED' && r.status !== 'REJECTED' && r.status !== 'CANCELLED')
-  .map(r => r.assetNo))
+/** 本人待审批或待交接的申请涉及的设备，选择设备时排除，避免重复提交 */
+const pendingRequests = computed(() => requests.value.filter(r => r.status === 'PENDING' || r.status === 'APPROVED'))
+const pendingNos = computed(() => pendingRequests.value.map(r => r.assetNo))
+const pendingReturns = computed(() => new Set(pendingRequests.value.filter(r => r.type === 'RETURN').map(r => r.assetNo)))
+const dueLists = computed(() => {
+  const overdue = dueAssets.value?.overdue || []
+  return [
+    { key: 'overdue', name: '逾期未申请归还', tone: 'b-red', rows: overdue.filter(device =>
+      !pendingReturns.value.has(device.no) && !returnSupplements.value.includes(device.no)) },
+    { key: 'supplement', name: '待补交归还', tone: 'b-orange', rows: overdue.filter(device => returnSupplements.value.includes(device.no)) },
+    { key: 'pending', name: '归还处理中', tone: 'b-blue', rows: overdue.filter(device => pendingReturns.value.has(device.no)) },
+    { key: 'upcoming', name: '即将到期', tone: 'b-orange', rows: restricted.value ? [] : dueAssets.value?.upcoming || [] }
+  ].filter(group => group.rows.length)
+})
+const unavailableNos = computed(() => [...new Set([...pendingNos.value, ...returnSupplements.value])])
 const quick = computed(() => (['RECEIVE', 'BORROW', 'REPLACE', 'RETURN'] as const).map(type => ({
   type, label: REQ_TYPE[type].name.replace('资产', ''), desc: REQ_TYPE[type].desc,
-  count: practiceType === type ? 1 : eligibleAssets(assets.value, type, myId.value, category.value, pendingNos.value).length
+  count: practiceType === type ? 1 : eligibleAssets(assets.value, type, myId.value, category.value, unavailableNos.value).length
 })))
 
 /* ------------------------------ 购入申请 ------------------------------ */
@@ -89,7 +110,10 @@ async function loadFocus() {
   focusedRows.value = []
   focusError.value = ''
   focusLoading.value = !!target
-  if (!target) return
+  if (!target || restricted.value) {
+    focusLoading.value = false
+    return
+  }
   requestPage.value = 1
   try {
     const api = target.kind === 'asset' ? assetRequestApi : purchaseApi
@@ -106,10 +130,10 @@ async function loadFocus() {
     }
   }
 }
-watch(focusedApplication, loadFocus, { immediate: true })
+watch([focusedApplication, restricted], loadFocus, { immediate: true })
 
 function openPurchase() {
-  purchaseFlow.value?.open()
+  if (!restricted.value) purchaseFlow.value?.open()
 }
 
 async function askCancellation(kind: Cancellation['kind'], id: number, no: string) {
@@ -138,7 +162,7 @@ async function confirmCancellation() {
     await api.cancel(target.id)
     cancelDialog.value?.close()
     toast('已撤销')
-    await Promise.all([load(), loadFocus()])
+    await Promise.all([load(), loadFocus(), reportState.refresh(auth.user?.id)])
   } catch (cause) {
     cancelError.value = cause instanceof Error ? cause.message : '撤销失败，请重试'
   } finally {
@@ -149,6 +173,7 @@ async function confirmCancellation() {
 function onRequestSubmitted() {
   requestPage.value = 1
   if (requestSection.value) requestSection.value.open = true
+  void reportState.refresh(auth.user?.id)
 }
 
 function onPurchaseSubmitted() {
@@ -176,6 +201,7 @@ onMounted(async () => {
   else if (route.query.type) openPick(String(route.query.type))
   else if (route.query.asset) await openDevice(String(route.query.asset))
 })
+watch(restricted, () => { void load() })
 watch(returnAsset, async no => {
   if (!no) return
   await load()
@@ -188,7 +214,7 @@ watch(() => route.query.asset, no => {
 })
 
 function actionsOf(asset: any) {
-  const pending = pendingNos.value.includes(asset.no)
+  const pending = unavailableNos.value.includes(asset.no)
   return assetActions(asset, myId.value).filter(action => {
     // 已有待审批申请的设备，不再提供重复申请入口（报修不受影响）
     if (pending && action !== 'REPAIR') return false
@@ -198,23 +224,27 @@ function actionsOf(asset: any) {
 /** 设备详情弹窗里的操作，同样屏蔽待审批设备的重复申请 */
 function detailActions() {
   const no = detail.value?.asset?.no
-  const pending = no ? pendingNos.value.includes(no) : false
+  const pending = no ? unavailableNos.value.includes(no) : false
   return (detail.value?.actions || []).filter((t: string) => !(pending && t !== 'REPAIR'))
 }
 async function load() {
   const version = ++loadVersion
   loading.value = true
-  if (canReadRequests.value) void loadPurchases()
-  if (!practiceType) void assetApi.borrowDue().then(value => {
-    if (version === loadVersion) dueAssets.value = value
-  }).catch(() => { if (version === loadVersion) dueAssets.value = undefined })
+  dueError.value = ''
+  if (!restricted.value && canReadRequests.value) void loadPurchases()
+  const due = practiceType ? Promise.resolve(undefined) : assetApi.borrowDue().catch((error: Error) => {
+    if (version === loadVersion) dueError.value = error.message || '逾期设备加载失败'
+    return undefined
+  })
   try {
-    const [a, r, c] = await Promise.all([
-      assetApi.list({}),
+    const [a, r, c, dueList] = await Promise.all([
+      restricted.value ? Promise.resolve([]) : assetApi.list({}),
       canReadRequests.value ? assetRequestApi.list({ mine: true }) : Promise.resolve([]),
-      assetCategoryApi.list()
+      restricted.value ? Promise.resolve([]) : assetCategoryApi.list(),
+      due
     ])
     if (version !== loadVersion) return
+    dueAssets.value = dueList
     assets.value = a || []; requests.value = r || []; categories.value = c
     requestPage.value = Math.min(requestPage.value, requestPageCount.value)
     if (category.value && !c.some(item => item.name === category.value)) category.value = ''
@@ -223,11 +253,16 @@ async function load() {
 }
 function openPick(type: string, no?: string) {
   if (!auth.can('request.create') || !['RECEIVE', 'BORROW', 'REPLACE', 'RETURN'].includes(type)) return
+  if (restricted.value && type !== 'RETURN') return
   detail.value = null
   flow.value?.open(type, no)
 }
 function openReturnLink(no: string) {
-  const asset = assets.value.find(item => item.no === no)
+  if (returnSupplements.value.includes(no)) {
+    void router.replace('/missing-reports')
+    return
+  }
+  const asset = requestAssets.value.find(item => item.no === no)
   if (asset && asset.status === '借出中' && asset.borrowerId === myId.value && auth.can('request.create')) {
     if (!pendingNos.value.includes(no)) {
       openPick('RETURN', no)
@@ -248,6 +283,7 @@ function onFlowClosed() {
   if (route.query.type || route.query.asset || route.query.returnAsset) void router.replace({ path: '/assets' })
 }
 async function openDevice(no: string) {
+  if (restricted.value) return
   const version = ++deviceVersion
   detail.value = null; deviceError.value = ''
   try { const result = await assetApi.detail(no); if (version === deviceVersion) detail.value = result }
@@ -263,6 +299,7 @@ function closeDetail() {
 
 <template>
   <div>
+    <template v-if="!restricted">
     <div v-if="deviceError" class="device-error" role="alert">
       <span>{{ deviceError }}</span>
       <button v-if="route.query.asset" class="btn sm" @click="openDevice(String(route.query.asset))">重新读取</button>
@@ -299,20 +336,38 @@ function closeDetail() {
       </div>
     </div>
 
-    <section v-if="dueLists.length" class="service-section borrow-due" aria-label="借用到期">
-      <header class="service-summary"><span>借用到期</span></header>
+    </template>
+
+    <section v-if="restricted || dueLists.length || dueError" ref="dueSection" class="service-section borrow-due" :aria-label="restricted ? '逾期未归还' : '借用到期'">
+      <h3 class="due-heading">{{ restricted ? '逾期未归还' : '借用到期' }}</h3>
       <div class="section-content">
+        <div v-if="dueError" class="empty" role="alert">{{ dueError }} <button type="button" class="btn sm" @click="load">重试</button></div>
+        <div v-else-if="restricted && !dueLists.length" class="empty">{{ loading ? '正在读取逾期设备…' : '暂无逾期设备' }}</div>
         <div v-for="group in dueLists" :key="group.key" class="due-group">
-          <h4>{{ group.name }} <span class="section-count">{{ group.rows.length }} 台</span></h4>
-          <div v-for="device in group.rows" :key="device.no" class="due-row">
-            <div><b>{{ device.name }}</b><p class="small muted">{{ device.no }} · 约定归还 {{ device.borrowDue }}</p></div>
-            <button v-if="auth.can('request.create') && !pendingNos.includes(device.no)" type="button" class="btn sm" @click="openPick('RETURN', device.no)">申请归还</button>
-            <span v-else-if="pendingNos.includes(device.no)" class="small muted">申请处理中</span>
-          </div>
+          <h4 class="due-group-heading">{{ group.name }} <span class="pill" :class="group.tone">{{ group.rows.length }} 台</span></h4>
+          <ul class="due-cards" role="list">
+            <li v-for="device in group.rows" :key="device.no" class="card due-card">
+              <div class="due-card-device">
+                <span class="due-device-icon"><DeviceIcon :name="device.icon && device.icon !== 'auto' ? device.icon : autoIconKey(device.category, device.name)" /></span>
+                <div class="due-device-identity">
+                  <h5>{{ device.name }}</h5>
+                  <span class="mono muted">{{ device.no }}</span>
+                </div>
+              </div>
+              <div class="due-card-footer">
+                <div class="due-date"><span class="muted">约定归还</span><time :datetime="device.borrowDue">{{ device.borrowDue }}</time></div>
+                <router-link v-if="returnSupplements.includes(device.no)" class="btn sm" to="/missing-reports">补交归还申请</router-link>
+                <span v-else-if="pendingNos.includes(device.no)" class="pill b-blue">归还申请处理中</span>
+                <button v-else-if="auth.can('request.create')" type="button" class="btn sm" :class="{ pri: group.key === 'overdue' }"
+                  @click="openPick('RETURN', device.no)">申请归还</button>
+              </div>
+            </li>
+          </ul>
         </div>
       </div>
     </section>
 
+    <template v-if="!restricted">
     <details ref="requestSection" class="service-section" :open="assetFocused || undefined">
       <summary class="service-summary">
         <span>我的申请</span>
@@ -464,20 +519,21 @@ function closeDetail() {
       </div>
     </details>
 
+    </template>
     <!-- 选设备 / 申请表单：与员工首页共用同一套流程 -->
     <AssetRequestFlow
       ref="flow"
-      :assets="assets"
+      :assets="requestAssets"
       :categories="categories"
       :loading="loading"
       :reload="load"
-      :pending-nos="pendingNos"
+      :pending-nos="unavailableNos"
       @submitted="onRequestSubmitted"
       @closed="onFlowClosed"
     />
 
     <!-- 设备详情 -->
-    <div v-if="detail" class="mask" @click.self="closeDetail">
+    <div v-if="!restricted && detail" class="mask" @click.self="closeDetail">
       <div class="dlg device-dialog" role="dialog" aria-modal="true" aria-label="设备操作" :data-asset-no="detail.asset.no">
         <div class="dlg-h">设备操作<span class="x" @click="closeDetail">×</span></div>
         <div class="dlg-b">
@@ -513,7 +569,7 @@ function closeDetail() {
       </div>
     </div>
   </div>
-  <PurchaseFlow ref="purchaseFlow" @submitted="onPurchaseSubmitted" />
+  <PurchaseFlow v-if="!restricted" ref="purchaseFlow" @submitted="onPurchaseSubmitted" />
   <dialog ref="cancelDialog" class="dlg cancel-dialog" role="alertdialog"
     aria-labelledby="cancel-application-title" aria-describedby="cancel-application-description"
     @cancel="escapeCancellation" @close="cancelTarget = null">
@@ -534,11 +590,44 @@ function closeDetail() {
 </template>
 
 <style scoped>
-.due-group + .due-group { margin-top:15px; }
-.due-group h4 { margin:0 0 4px; }
-.due-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 0; border-bottom:1px solid var(--line2); }
-.due-row p { margin:4px 0 0; overflow-wrap:anywhere; }
-.due-row button { flex-shrink:0; }
+.borrow-due { padding-block:5px; }
+.due-heading { font-size:16px; }
+.due-group + .due-group { margin-top:16px; }
+.due-group-heading { display:flex; align-items:center; flex-wrap:wrap; gap:7px; margin-bottom:7px; font-size:13px; }
+.due-cards {
+  display:grid;
+  grid-template-columns:repeat(auto-fit, minmax(min(100%, 290px), 1fr));
+  gap:8px;
+  padding:0;
+  margin:0;
+  list-style:none;
+}
+.due-card { display:grid; grid-template-rows:1fr auto; gap:10px; min-width:0; padding:13px 14px; border:1px solid var(--line2); }
+.due-card-device { display:flex; align-items:center; gap:10px; min-width:0; }
+.due-device-icon {
+  display:grid;
+  place-items:center;
+  flex:0 0 40px;
+  height:40px;
+  border-radius:11px;
+  background:var(--brand-l);
+  color:var(--brand);
+}
+.due-device-icon svg { width:28px; height:28px; }
+.due-device-identity { min-width:0; overflow-wrap:anywhere; }
+.due-device-identity h5 { margin:0; font-size:14px; line-height:1.45; }
+.due-device-identity .mono { display:block; margin-top:3px; font-size:11px; }
+.due-card-footer {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  flex-wrap:wrap;
+  gap:8px;
+  padding-top:9px;
+  border-top:1px solid var(--line2);
+}
+.due-date { display:flex; flex-wrap:wrap; gap:3px 6px; min-width:0; font-size:12px; }
+.due-date time { color:var(--t2); font-variant-numeric:tabular-nums; }
 
 .cancel-dialog { max-width:min(420px, calc(100% - 32px)); margin:auto; border:0; padding:0; color:var(--t1); }
 .cancel-dialog::backdrop { background:rgba(0, 0, 0, .42); }

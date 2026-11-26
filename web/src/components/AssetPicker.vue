@@ -125,14 +125,23 @@ async function onChoiceKeydown(event: KeyboardEvent, index: number) {
             role="radio" :aria-checked="modelValue === asset.no" :aria-label="(mine(asset) ? '我的设备，' : '') + asset.name + '，' + asset.no + '，' + asset.status"
             :tabindex="modelValue === asset.no || (!selectedVisible && index === 0) ? 0 : -1" :data-asset-no="asset.no"
             @click="emit('update:modelValue', asset.no)" @keydown="onChoiceKeydown($event, index)">
-            <div class="device-art" :class="artClass(asset)">
-              <span class="pill" :class="ASSET_STATUS_CLASS[asset.status] || 'b-gray'">{{ asset.status }}</span>
-              <DeviceIcon :name="iconOf(asset)" />
-              <span v-if="modelValue === asset.no" class="selected-mark" aria-hidden="true">✓</span>
-              <span v-if="mine(asset)" class="mine-mark">我的设备</span>
-            </div>
-            <div class="device-info"><h5>{{ asset.name }}</h5><div v-if="showNo" class="device-no mono">{{ asset.no }}</div><p v-if="asset.model">型号：{{ asset.model }}</p><div class="device-category">{{ asset.category }}</div><p>{{ asset.location || '未标注位置' }}</p><p v-if="asset.sn" class="device-sn">SN：{{ asset.sn }}</p></div>
-            <div class="device-select"><span>{{ modelValue === asset.no ? '已选择' : selectLabel }}</span><i aria-hidden="true">{{ modelValue === asset.no ? '✓' : '' }}</i></div>
+            <span class="device-card">
+              <span class="device-art" :class="artClass(asset)">
+                <span class="pill" :class="ASSET_STATUS_CLASS[asset.status] || 'b-gray'">{{ asset.status }}</span>
+                <DeviceIcon :name="iconOf(asset)" />
+                <span v-if="modelValue === asset.no" class="selected-mark" aria-hidden="true">✓</span>
+                <span v-if="mine(asset)" class="mine-mark">我的设备</span>
+              </span>
+              <span class="device-info">
+                <strong class="device-name">{{ asset.name }}</strong>
+                <span v-if="showNo" class="device-no mono">{{ asset.no }}</span>
+                <span v-if="asset.model" class="device-meta">型号：{{ asset.model }}</span>
+                <span class="device-category">{{ asset.category }}</span>
+                <span class="device-meta">{{ asset.location || '未标注位置' }}</span>
+                <span v-if="asset.sn" class="device-meta device-sn">SN：{{ asset.sn }}</span>
+              </span>
+              <span class="device-select"><span>{{ modelValue === asset.no ? '已选择' : selectLabel }}</span><i aria-hidden="true">{{ modelValue === asset.no ? '✓' : '' }}</i></span>
+            </span>
           </button>
         </div>
       </div>
@@ -141,8 +150,8 @@ async function onChoiceKeydown(event: KeyboardEvent, index: number) {
 </template>
 
 <style scoped>
-.asset-picker { display:grid; grid-template-columns:166px minmax(0,1fr); height:var(--asset-picker-height, min(58vh,540px)); min-height:280px; overflow:hidden; background:#fff; }
-.picker-categories { display:flex; flex-direction:column; min-height:0; background:#f7f8fa; border-right:1px solid var(--line2); }
+.asset-picker { display:grid; grid-template-columns:166px minmax(0,1fr); grid-template-rows:minmax(0,1fr); height:var(--asset-picker-height, min(58vh,540px)); min-height:280px; overflow:hidden; background:#fff; }
+.picker-categories { display:flex; flex-direction:column; min-width:0; min-height:0; background:#f7f8fa; border-right:1px solid var(--line2); }
 .category-heading { padding:20px 18px 12px; font-size:12px; color:var(--t3); font-weight:600; }
 .category-options { overflow-y:auto; overscroll-behavior:contain; padding:0 9px 16px; }
 .category-option { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; border:0; border-radius:10px; background:transparent; padding:13px 11px; margin-bottom:4px; text-align:left; cursor:pointer; color:var(--t2); font-size:13px; line-height:1.5; }
@@ -150,24 +159,64 @@ async function onChoiceKeydown(event: KeyboardEvent, index: number) {
 .category-option:hover { background:#edf1f7; }.category-option.active { background:#e8f2ff; color:var(--brand); font-weight:700; }.category-option.active small { background:#d3e7ff; color:var(--brand); }
 .category-option:focus-visible,.device-option:focus-visible { outline:2px solid var(--brand); outline-offset:-2px; }
 .picker-main { display:flex; flex-direction:column; min-width:0; min-height:0; }
-.picker-toolbar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; padding:19px 20px 16px; border-bottom:1px solid var(--line2); }
-.picker-toolbar h4 { font-size:15px; margin:0; }.picker-toolbar p { font-size:11.5px; color:var(--t3); margin:5px 0 0; }
+.picker-toolbar { display:flex; flex-shrink:0; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; padding:19px 20px 16px; border-bottom:1px solid var(--line2); }
+.picker-toolbar > div { min-width:0; }
+.picker-toolbar h4 { font-size:15px; margin:0; overflow-wrap:anywhere; }.picker-toolbar p { font-size:11.5px; color:var(--t3); margin:5px 0 0; }
 .picker-search { display:flex; align-items:center; gap:8px; flex:1; min-width:150px; max-width:250px; height:36px; padding:0 11px; border:1px solid var(--line); border-radius:10px; background:#fff; }.picker-search:focus-within { border-color:var(--brand); box-shadow:0 0 0 3px rgba(0,113,227,.08); }
 .picker-search svg { width:16px; height:16px; flex-shrink:0; fill:none; stroke:var(--t3); stroke-width:1.7; }.picker-search input { min-width:0; width:100%; border:0; outline:0; font:inherit; font-size:12px; background:transparent; }
-.picker-results { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:18px 20px 22px; }
-.device-options { display:grid; grid-template-columns:repeat(auto-fill,minmax(205px,1fr)); gap:14px; align-items:stretch; }
-.device-option { display:flex; flex-direction:column; min-width:0; border:1px solid #e4e8ee; border-radius:14px; background:#fff; padding:0; text-align:left; cursor:pointer; overflow:hidden; transition:border-color .15s,box-shadow .15s; }
+.picker-results { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; padding:18px 20px 22px; }
+.device-options { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,205px),1fr)); gap:14px; align-items:stretch; }
+.device-option {
+  display:grid; grid-template-columns:minmax(0,1fr); width:100%; min-width:0; padding:0;
+  border:1px solid #e4e8ee; border-radius:14px; background:#fff; color:var(--t1);
+  -webkit-appearance:none; appearance:none; font:inherit; text-align:left; white-space:normal;
+  cursor:pointer; overflow:hidden; transition:border-color .15s,box-shadow .15s;
+}
+.device-card { display:grid; grid-template:auto 1fr auto / minmax(0,1fr); width:100%; min-width:0; }
 .device-option:hover { border-color:#94bff1; box-shadow:0 4px 14px rgba(0,74,148,.07); }.device-option.selected { border-color:var(--brand); box-shadow:0 0 0 1px var(--brand); }
 /* 底色与描边色由全局 .art-xxx 提供（按图标族配色），这里只管排版 */
 .device-art { position:relative; display:flex; align-items:center; justify-content:center; height:104px; flex-shrink:0; }
 .device-art > svg { width:66px; height:66px; }.device-art .pill { position:absolute; top:10px; left:10px; font-size:10px; font-weight:500; white-space:nowrap; }
 .selected-mark { position:absolute; top:10px; right:10px; width:21px; height:21px; border-radius:50%; background:var(--brand); color:#fff; display:grid; place-items:center; font-size:12px; }
 .mine-mark { position:absolute; bottom:9px; left:10px; padding:3px 9px; border-radius:999px; background:#fff; color:var(--brand); font-size:10px; font-weight:600; letter-spacing:.02em; box-shadow:0 2px 8px rgba(0,74,148,.14); }
-.device-info { padding:13px 13px 12px; flex:1; }.device-info h5 { margin:0 0 7px; font-size:13px; line-height:1.6; font-weight:650; overflow-wrap:anywhere; }.device-no { font-size:10.5px; color:var(--t2); overflow-wrap:anywhere; line-height:1.6; }
-.device-category { display:inline-block; padding:2px 6px; margin-top:8px; border-radius:5px; background:#f3f5f8; font-size:10px; color:var(--t3); }.device-info p { font-size:11px; color:var(--t3); line-height:1.5; margin:7px 0 0; overflow-wrap:anywhere; }.device-info .device-sn { font-size:10px; }
-.device-select { display:flex; align-items:center; justify-content:space-between; padding:10px 13px; border-top:1px solid var(--line2); font-size:11.5px; color:var(--t3); }.device-select i { width:15px; height:15px; border:1px solid #ccd4df; border-radius:50%; font-style:normal; display:grid; place-items:center; font-size:10px; }
+.device-info { min-width:0; padding:13px 13px 12px; }
+.device-info > * { max-width:100%; word-break:break-word; overflow-wrap:anywhere; }
+.device-name { display:block; margin:0 0 7px; font-size:13px; line-height:1.6; font-weight:650; }
+.device-no { display:block; font-size:10.5px; color:var(--t2); line-height:1.6; }
+.device-category { display:inline-block; padding:2px 6px; margin-top:8px; border-radius:5px; background:#f3f5f8; font-size:10px; color:var(--t3); }
+.device-meta { display:block; margin-top:7px; font-size:11px; color:var(--t3); line-height:1.5; }
+.device-sn { font-size:10px; }
+.device-select { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 13px; border-top:1px solid var(--line2); font-size:11.5px; color:var(--t3); }
+.device-select span { min-width:0; overflow-wrap:anywhere; }
+.device-select i { flex-shrink:0; width:15px; height:15px; border:1px solid #ccd4df; border-radius:50%; font-style:normal; display:grid; place-items:center; font-size:10px; }
 .selected .device-select { color:var(--brand); background:#f4f9ff; font-weight:600; }.selected .device-select i { background:var(--brand); border-color:var(--brand); color:#fff; }
 .picker-empty { min-height:230px; height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; gap:10px; color:var(--t3); padding:20px; font-size:12px; }.picker-empty svg { width:62px; height:62px; fill:none; stroke:#b9c9dc; stroke-width:1.6; }.picker-empty b { color:var(--t2); font-size:14px; }.picker-empty p { margin:0; line-height:1.8; max-width:300px; }
-@media(max-width:600px) { .asset-picker { grid-template-columns:92px minmax(0,1fr); height:var(--asset-picker-height,min(59dvh,520px)); min-height:260px; }.category-heading { padding:16px 10px 10px; font-size:11px; }.category-options { padding:0 5px 10px; }.category-option { padding:12px 7px; gap:4px; font-size:11.5px; }.category-option small { min-width:17px; padding:1px 3px; font-size:9px; }.picker-toolbar { padding:13px 12px; gap:10px; }.picker-toolbar h4 { font-size:13px; }.picker-toolbar p { font-size:10px; }.picker-search { flex-basis:100%; min-width:0; max-width:none; height:33px; padding:0 8px; }.picker-search input { font-size:11px; }.picker-results { padding:12px; }.device-options { grid-template-columns:minmax(0,1fr); gap:12px; }.device-art { height:88px; }.device-art > svg { width:59px; height:59px; }.device-info { padding:11px; }.device-info h5 { font-size:12px; }.device-select { padding:9px 11px; font-size:11px; }.picker-empty { min-height:200px; padding:10px 2px; }.picker-empty b { font-size:12px; } }
+@media(max-width:600px) {
+  .asset-picker { grid-template-columns:clamp(72px,24%,92px) minmax(0,1fr); height:var(--asset-picker-height,min(59vh,520px)); min-height:260px; }
+  @supports (height: 100dvh) { .asset-picker { height:var(--asset-picker-height,min(59dvh,520px)); } }
+  .category-heading { padding:16px 10px 10px; font-size:11px; }
+  .category-options { padding:0 5px 10px; }
+  .category-option { padding:12px 6px; gap:3px; font-size:11.5px; }
+  .category-option span { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; }
+  .category-option small { min-width:17px; padding:1px 3px; font-size:9px; }
+  .picker-toolbar { padding:13px 12px; gap:10px; }
+  .picker-toolbar h4 { font-size:13px; }
+  .picker-toolbar p { font-size:10px; }
+  .picker-search { flex-basis:100%; min-width:0; max-width:none; height:33px; padding:0 8px; }
+  .picker-search input { font-size:11px; }
+  .picker-results { padding:12px; }
+  .device-options { grid-template-columns:minmax(0,1fr); gap:12px; }
+  .device-art { display:grid; grid-template:minmax(21px,auto) 1fr auto / minmax(0,1fr) auto; height:auto; padding:8px 10px; gap:1px 6px; }
+  .device-art .pill, .selected-mark, .mine-mark { position:static; max-width:100%; }
+  .device-art .pill { grid-area:1 / 1; justify-self:start; white-space:normal; overflow-wrap:anywhere; }
+  .selected-mark { grid-area:1 / 2; justify-self:end; }
+  .device-art > svg { grid-area:2 / 1 / 3 / -1; justify-self:center; width:50px; max-width:100%; height:46px; }
+  .mine-mark { grid-area:3 / 1 / 4 / -1; justify-self:start; overflow-wrap:anywhere; }
+  .device-info { padding:11px; }
+  .device-name { font-size:12px; }
+  .device-select { padding:9px 11px; font-size:11px; }
+  .picker-empty { min-height:200px; padding:10px 2px; }
+  .picker-empty b { font-size:12px; }
+}
 @media(prefers-reduced-motion:reduce) { .device-option { transition:none; } }
 </style>

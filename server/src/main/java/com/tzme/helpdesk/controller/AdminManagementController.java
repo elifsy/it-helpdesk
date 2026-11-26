@@ -8,6 +8,7 @@ import com.tzme.helpdesk.dto.*;
 import com.tzme.helpdesk.job.ScheduledJobs;
 import com.tzme.helpdesk.job.BorrowDueJob;
 import com.tzme.helpdesk.mapper.*;
+import com.tzme.helpdesk.security.Permissions;
 import com.tzme.helpdesk.service.*;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -48,9 +49,9 @@ public class AdminManagementController {
     @DeleteMapping("/departments/{id}") @com.tzme.helpdesk.security.RequiresPermission({"dept.manage"})
     public ApiResponse<Void> deleteDept(@PathVariable Long id) { service.deleteDept(id); return ApiResponse.ok(); }
     @GetMapping("/settings") @com.tzme.helpdesk.security.RequiresPermission({"settings.manage"})
-    public ApiResponse<ObjectNode> settings() { return ApiResponse.ok(settings.forClient(settings.get())); }
+    public ApiResponse<ObjectNode> settings() { return ApiResponse.ok(settings.managementView(settings.get())); }
     @PutMapping("/settings") @com.tzme.helpdesk.security.RequiresPermission({"settings.manage"})
-    public ApiResponse<ObjectNode> saveSettings(@Valid @RequestBody RuntimeSettings req) { return ApiResponse.ok(settings.forClient(settings.save(req))); }
+    public ApiResponse<ObjectNode> saveSettings(@RequestBody ObjectNode req) { return ApiResponse.ok(settings.managementView(settings.save(req))); }
     @PostMapping("/solution-codes") @com.tzme.helpdesk.security.RequiresPermission({"dict.manage"})
     public ApiResponse<SolutionCode> createCode(@Valid @RequestBody SolutionAdminReq req) { return ApiResponse.ok(service.saveSolution(null,req)); }
     @PutMapping("/solution-codes/{id}") @com.tzme.helpdesk.security.RequiresPermission({"dict.manage"})
@@ -65,6 +66,7 @@ public class AdminManagementController {
     }
     @GetMapping("/storage") @com.tzme.helpdesk.security.RequiresPermission({"settings.manage"})
     public ApiResponse<Map<String,Object>> storage() {
+        Permissions.requireSuperAdmin();
         Map<String,Object> result=new LinkedHashMap<>(attachments.storageSummary());
         result.put("type","本地磁盘"); result.put("directory",java.nio.file.Path.of(props.getUpload().getDir()).toAbsolutePath().normalize().toString());
         return ApiResponse.ok(result);

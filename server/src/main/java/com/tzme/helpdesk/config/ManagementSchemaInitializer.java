@@ -27,6 +27,11 @@ public class ManagementSchemaInitializer implements InitializingBean {
         ApplicantIdentityMigration.upgrade(dataSource);
         AccountBadgeSchemaMigration.upgrade(dataSource);
         JdbcTemplate jdbc = new JdbcTemplate(dataSource);
+        addColumn(jdbc, "it_missing_report", "business_type", "varchar(12) not null default 'REPAIR'");
+        addColumn(jdbc, "it_missing_report", "asset_no", "varchar(32) default null");
+        addColumn(jdbc, "it_missing_report", "new_asset_no", "varchar(32) default null");
+        addColumn(jdbc, "it_missing_report", "expect_return", "date default null");
+        addColumn(jdbc, "it_missing_report", "asset_request_no", "varchar(32) default null");
         Boolean hasCategoryNote = jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<Boolean>) connection -> {
             try (var columns = connection.getMetaData().getColumns(connection.getCatalog(), null, "it_ticket", "category_note")) {
                 return columns.next();
@@ -85,13 +90,17 @@ public class ManagementSchemaInitializer implements InitializingBean {
     }
 
     private boolean addTicketColumn(JdbcTemplate jdbc, String name, String type) {
+        return addColumn(jdbc, "it_ticket", name, type + " default null");
+    }
+
+    private boolean addColumn(JdbcTemplate jdbc, String table, String name, String definition) {
         Boolean exists = jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<Boolean>) connection -> {
-            try (var columns = connection.getMetaData().getColumns(connection.getCatalog(), null, "it_ticket", name)) {
+            try (var columns = connection.getMetaData().getColumns(connection.getCatalog(), null, table, name)) {
                 return columns.next();
             }
         });
         if (Boolean.TRUE.equals(exists)) return false;
-        jdbc.execute("alter table it_ticket add column " + name + " " + type + " default null");
+        jdbc.execute("alter table " + table + " add column " + name + " " + definition);
         return true;
     }
 }

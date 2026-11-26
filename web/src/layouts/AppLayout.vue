@@ -15,6 +15,7 @@ import {
 } from '../api'
 import ContactLeaveStatus from '../components/ContactLeaveStatus.vue'
 import AccountBadge from '../components/AccountBadge.vue'
+import NavigationIcon from '../components/NavigationIcon.vue'
 import { useAuthStore } from '../stores/auth'
 import { useMissingReportStore } from '../stores/missingReports'
 import {
@@ -23,6 +24,7 @@ import {
   ROLE_META,
   ROLE_NAMES,
   TABS,
+  canViewAllTickets,
   roleFromRoles,
   homeForRoles,
   routeAllowed,
@@ -115,6 +117,8 @@ watch([isHome, () => auth.user?.id], async ([home, userId], _, onCleanup) => {
   }
 }, { immediate: true })
 const reportRestrictedPage = computed(() => !tutorialWorkflow.value && (route.path === '/new' || route.path === '/assets'))
+const reportLoading = computed(() => reportRestrictedPage.value && reportState.loadedFor !== auth.user?.id)
+const reportBlocked = computed(() => reportRestrictedPage.value && reportState.summary?.blocked)
 watch([() => auth.user?.id, () => route.path], ([id]) => {
   if (!id || ['/home', '/new', '/assets', '/missing-reports'].includes(route.path)) void reportState.refresh(id)
 }, { immediate: true })
@@ -127,6 +131,8 @@ const notifies = ref<Notification[]>([])
 const showNotif = ref(false)
 const showUserMenu = ref(false)
 const showMobileMenu = ref(false)
+const mobileDestination = ref('')
+const pressedMobileDestination = ref('')
 const showRail = ref(false)
 const railTrigger = ref<HTMLButtonElement>()
 const railSummary = ref<HTMLElement>()
@@ -141,22 +147,37 @@ watch(showMobileMenu, async open => {
     showUserMenu.value = false
     showNotif.value = false
     await nextTick()
-    if (showMobileMenu.value) mobileNav.value?.querySelector<HTMLButtonElement>('button')?.focus()
+    if (showMobileMenu.value) mobileNav.value?.focus({ preventScroll: true })
   } else {
+    mobileDestination.value = ''
+    pressedMobileDestination.value = ''
     if (navigationOverflow !== null) document.body.style.overflow = navigationOverflow
     navigationOverflow = null
     navigationFocus?.focus()
   }
 })
-watch(() => route.fullPath, () => { showMobileMenu.value = false; showRail.value = false })
+watch([() => route.fullPath, workRole], () => { showMobileMenu.value = false; showRail.value = false })
+async function selectMobileDestination(path: string) {
+  if (mobileDestination.value) return
+  mobileDestination.value = path
+  // Start the selected icon animation before the drawer begins to fade.
+  await nextTick()
+  showMobileMenu.value = false
+  await router.push(path)
+}
 function navigationKey(event: KeyboardEvent) {
   if (event.key === 'Escape') { event.preventDefault(); showMobileMenu.value = false }
   if (event.key !== 'Tab') return
   const controls = mobileNav.value?.querySelectorAll<HTMLElement>('button:not([disabled]), a[href]')
   if (!controls?.length) return
   const first = controls[0], last = controls[controls.length - 1]
-  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
-  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+  if (event.shiftKey && (document.activeElement === first || document.activeElement === mobileNav.value)) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
 }
 function resizeNavigation() {
   if (window.innerWidth >= 900) showMobileMenu.value = false
@@ -215,17 +236,18 @@ watch([showUserMenu, () => auth.user?.id, canOpenMyTickets, canOpenMyRequests],
 const kw = ref('')
 const allTickets = ref<any[]>([])
 const searchFocus = ref(false)
+const searchAllTickets = computed(() => !personalPage.value && canViewAllTickets(auth.roles, auth.permissions))
 const searchResults = computed(() => {
   const k = kw.value.trim().toLowerCase()
   if (!k) return []
   return allTickets.value
-    .filter((t) => `${t.no} ${t.title}`.toLowerCase().includes(k))
+    .filter((t) => (searchAllTickets.value || t.creatorId === auth.user?.id) && `${t.no} ${t.title}`.toLowerCase().includes(k))
     .slice(0, 6)
 })
 function openTicket(no: string) {
   kw.value = ''
   searchFocus.value = false
-  router.push(auth.can('ticket.view.all') && !personalPage.value ? `/admin/ticket/${no}` : `/ticket/${no}`)
+  router.push(searchAllTickets.value ? `/admin/ticket/${no}` : `/ticket/${no}`)
 }
 function onSearchBlur() {
   window.setTimeout(() => (searchFocus.value = false), 180)
@@ -247,7 +269,7 @@ async function loadBadges() {
   try {
     const [nv, t, ar] = await Promise.all([
       notifyApi.unread(),
-      auth.can("ticket.view.own") || auth.can("ticket.view.all") ? ticketApi.list({ status: 'NEW', page: 1, size: 1 }) : Promise.resolve({ total: 0 }),
+      canOpenMyTickets.value ? ticketApi.list({ mine: !canViewAllTickets(auth.roles, auth.permissions), status: 'NEW', page: 1, size: 1 }) : Promise.resolve({ total: 0 }),
       auth.can('request.view.own') || auth.can('request.view.all') ? assetRequestApi.list({ status: 'PENDING' }) : Promise.resolve([])
     ])
     unread.value = nv?.count || 0
@@ -281,7 +303,7 @@ async function loadRail() {
         auth.can("stats.view") ? statsApi.overview() : Promise.resolve({}),
         metaApi.categories(),
         metaApi.solutionCodes(),
-        auth.can("settings.manage") ? adminApi.settings() : Promise.resolve({})
+        auth.roles.includes('SUPER_ADMIN') ? adminApi.settings() : Promise.resolve({})
       ])
       ov.value = o || {}
       catsMeta.value = c || {}
@@ -296,7 +318,7 @@ async function loadRail() {
 async function loadAll() {
   await Promise.all([loadBadges(), loadRail()])
   try {
-    const r = auth.can("ticket.view.own") || auth.can("ticket.view.all") ? await ticketApi.list({ mine: personalPage.value || undefined, page: 1, size: 50 }) : { list: [] }
+    const r = canOpenMyTickets.value ? await ticketApi.list({ mine: !searchAllTickets.value, page: 1, size: 50 }) : { list: [] }
     allTickets.value = r?.list || []
   } catch {
     allTickets.value = []
@@ -333,7 +355,6 @@ async function switchUser(name: string) {
   showUserMenu.value = false
   try {
     await auth.loginAsDemo(name)
-    await loadAll()
     router.push(homeForRoles(auth.roles, auth.permissions))
   } catch (e: any) { syncText.value = e.message; window.alert(e.message) }
 }
@@ -364,7 +385,10 @@ function isOn(path: string) {
   )
 }
 function tabOn(path: string) {
-  return isOn(path)
+  const section = path.split('?')[0]
+  return route.path === section
+    || (section === '/tickets' && route.path.startsWith('/ticket/'))
+    || (section === '/admin/tickets' && route.path.startsWith('/admin/ticket/'))
 }
 
 const onAdminChange = () => { void loadRail() }
@@ -390,9 +414,10 @@ watch([workRole, personalPage], loadAll)
   <div class="shell">
     <!-- 顶栏：无横向导航，只有品牌 + 当前位置 + 全局工具 -->
     <header class="top">
-      <button class="mobile-menu-button" aria-label="打开全部功能" :aria-expanded="showMobileMenu" @click="showMobileMenu = true">☰</button>
+      <button v-if="workRole !== 'emp'" type="button" class="mobile-menu-button" aria-label="打开全部功能"
+        :aria-expanded="showMobileMenu" @click="showMobileMenu = true">☰</button>
       <div class="logo">
-        <img class="brand-ic" src="/icon-48.png" alt="" width="26" height="26" />
+        <img class="brand-ic" src="/icon-48.png?v=2" alt="" width="26" height="26" />
         <span>IT 服务台</span>
       </div>
       <div class="ctx">
@@ -500,12 +525,16 @@ watch([workRole, personalPage], loadAll)
             <button
               v-for="m in g.items"
               :key="m.path"
-              class="mi"
+              class="mi animated-nav"
+              type="button"
               :class="{ on: isOn(m.path) }"
+              :aria-current="isOn(m.path) ? 'page' : undefined"
               @click="router.push(m.path)"
             >
-              <span class="ic">{{ m.icon }}</span>
-              <span>{{ m.label }}</span>
+              <span class="tab-icon-frame" aria-hidden="true"><span class="tab-icon-motion">
+                <NavigationIcon :destination="m.path" />
+              </span></span>
+              <span class="mi-label">{{ m.label }}</span>
               <span v-if="badgeOf(m.badge)" class="n">{{ badgeOf(m.badge) }}</span>
             </button>
           </div>
@@ -522,17 +551,21 @@ watch([workRole, personalPage], loadAll)
       <div class="work-area">
         <!-- 主栏 -->
         <main class="main">
-          <div v-if="reportRestrictedPage && reportState.loadedFor !== auth.user?.id" class="empty" role="status">正在检查待补报事项…</div>
-          <section v-else-if="reportRestrictedPage && reportState.summary?.blocked" class="card report-block">
-            <h2>请先补报已完成事项</h2>
-            <p>你有 {{ reportState.summary.pending }} 条事项待补报。待补报数量降至 {{ reportState.summary.limit }} 条及以下后，可恢复报修和资产服务。</p>
-            <router-link class="btn pri" to="/missing-reports">查看并补报</router-link>
-          </section>
-          <template v-else>
-            <div v-if="reportRestrictedPage && reportState.summary?.pending" class="card report-notice">
-              <span class="pill b-orange">{{ reportState.summary.pending }} 条待补报</span>
-              <router-link to="/missing-reports">查看已完成事项</router-link>
+          <div v-if="reportLoading" class="empty" role="status">正在检查待处理事项…</div>
+          <section v-else-if="reportBlocked && reportState.summary" class="card report-block">
+            <h2>请先处理待补交事项或归还逾期设备</h2>
+            <p>目前有 {{ reportState.summary.pending }} 项待处理。处理至 {{ reportState.summary.limit }} 项及以下后，可以发起新的报修和资产申请。</p>
+            <div class="row quota-links">
+              <router-link class="btn pri" to="/missing-reports">查看待补交事项</router-link>
+              <router-link v-if="route.path === '/new' && auth.can('asset.view') && reportState.summary.pendingByType?.overdueReturn"
+                class="btn" to="/assets?tab=overdue">处理逾期设备</router-link>
             </div>
+          </section>
+          <div v-else-if="reportRestrictedPage && reportState.summary?.pending" class="card report-notice">
+            <span class="pill b-orange">{{ reportState.summary.pending }} 项待处理</span>
+            <router-link to="/missing-reports">查看待处理事项</router-link>
+          </div>
+          <template v-if="!reportLoading && (!reportBlocked || route.path === '/assets')">
             <router-view v-slot="{ Component }">
               <KeepAlive :max="1">
                 <component :is="Component" v-if="!tutorialPractice" :key="route.matched[route.matched.length - 1]?.path" />
@@ -608,7 +641,7 @@ watch([workRole, personalPage], loadAll)
                 </div>
                 <p v-if="syncText" class="sub" style="margin-top: 10px; color: #0071e3">{{ syncText }}</p>
               </div>
-              <div class="panel">
+              <div v-if="auth.roles.includes('SUPER_ADMIN')" class="panel">
                 <h4>运行参数</h4>
                 <div class="line"><span>二维码基址</span><span class="sp" /><span class="v mono" style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="adminRuntime.qrcodeBaseUrl">{{ adminRuntime.qrcodeBaseUrl || '—' }}</span></div>
                 <div class="line"><span>统计缓存</span><span class="sp" /><span class="v">{{ adminRuntime.statsCacheSeconds === 0 ? '已关闭' : (adminRuntime.statsCacheSeconds ?? '—') + ' 秒' }}</span></div>
@@ -637,32 +670,48 @@ watch([workRole, personalPage], loadAll)
       </div>
     </div>
 
-    <div v-if="showMobileMenu" class="mobile-nav-mask" @click.self="showMobileMenu = false" @keydown="navigationKey">
-      <section ref="mobileNav" class="mobile-nav" role="dialog" aria-modal="true" aria-labelledby="mobile-nav-title">
-        <div class="mobile-nav-head"><b id="mobile-nav-title">全部功能</b><button aria-label="关闭全部功能" @click="showMobileMenu = false">×</button></div>
-        <div class="mobile-nav-account"><b>{{ auth.user?.name }}</b><span>{{ meta.label }}<template v-if="auth.user?.deptName"> · {{ auth.user.deptName }}</template></span></div>
-        <div class="mobile-nav-groups">
-          <template v-for="group in groups" :key="group.title">
-            <h3>{{ group.title }}</h3>
-            <button v-for="item in group.items" :key="item.path" class="mi" :class="{ on: isOn(item.path) }" @click="showMobileMenu = false; router.push(item.path)">
-              <span class="ic">{{ item.icon }}</span><span>{{ item.label }}</span><span v-if="badgeOf(item.badge)" class="n">{{ badgeOf(item.badge) }}</span>
-            </button>
-          </template>
-        </div>
-      </section>
-    </div>
+    <Transition name="mobile-nav" @before-leave="element => element.setAttribute('inert', '')">
+      <div v-if="showMobileMenu" class="mobile-nav-mask" :class="{ selecting: mobileDestination }"
+        @click.self="showMobileMenu = false" @keydown="navigationKey">
+        <section ref="mobileNav" class="mobile-nav" role="dialog" aria-modal="true" aria-labelledby="mobile-nav-title" tabindex="-1">
+          <div class="mobile-nav-head">
+            <b id="mobile-nav-title">全部功能</b>
+            <button type="button" aria-label="关闭全部功能" @click="showMobileMenu = false">×</button>
+          </div>
+          <div class="mobile-nav-account"><b>{{ auth.user?.name }}</b><span>{{ meta.label }}<template v-if="auth.user?.deptName"> · {{ auth.user.deptName }}</template></span></div>
+          <div class="mobile-nav-groups">
+            <template v-for="group in groups" :key="group.title">
+              <h3>{{ group.title }}</h3>
+              <button v-for="item in group.items" :key="item.path" type="button" class="mi animated-nav"
+                :class="{ on: mobileDestination ? mobileDestination === item.path : isOn(item.path), pressed: pressedMobileDestination === item.path }"
+                :aria-current="isOn(item.path) ? 'page' : undefined"
+                @pointerdown.left="pressedMobileDestination = item.path" @pointerup="pressedMobileDestination = ''"
+                @pointercancel="pressedMobileDestination = ''" @pointerleave="pressedMobileDestination = ''"
+                @click="selectMobileDestination(item.path)">
+                <span class="tab-icon-frame" aria-hidden="true"><span class="tab-icon-motion">
+                  <NavigationIcon :destination="item.path" />
+                </span></span>
+                <span class="mi-label">{{ item.label }}</span>
+                <span v-if="badgeOf(item.badge)" class="n">{{ badgeOf(item.badge) }}</span>
+              </button>
+            </template>
+          </div>
+        </section>
+      </div>
+    </Transition>
 
     <!-- 手机端底部导航 -->
     <nav class="tabs" aria-label="手机底部导航">
-      <button
-        v-for="t in tabs"
-        :key="t.path"
-        :class="{ on: tabOn(t.path) }"
-        :aria-current="tabOn(t.path) ? 'page' : undefined"
-        @click="router.push(t.path)"
-      >
-        <span>{{ t.icon }}</span>{{ t.label }}
-      </button>
+      <div class="tab-dock">
+        <button v-for="t in tabs" :key="t.path" class="tab-button animated-nav" type="button"
+          :class="{ on: tabOn(t.path) }" :aria-current="tabOn(t.path) ? 'page' : undefined"
+          @click="router.push(t.path)">
+          <span class="tab-icon-frame" aria-hidden="true"><span class="tab-icon-motion">
+            <NavigationIcon :destination="t.path" />
+          </span></span>
+          <span class="tab-label">{{ t.label }}</span>
+        </button>
+      </div>
     </nav>
 
     <div class="toast" :class="{ show: !!toastText }">{{ toastText }}</div>
@@ -672,6 +721,7 @@ watch([workRole, personalPage], loadAll)
 <style scoped>
 .report-block { max-width:680px; padding:20px; }
 .report-block p { margin:12px 0 16px; line-height:1.6; }
+.quota-links { flex-wrap:wrap; gap:8px; }
 .report-notice { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:12px; }
 .shell {
   --account-badge-width: 112px;
@@ -698,8 +748,8 @@ watch([workRole, personalPage], loadAll)
 }
 .logo { display: flex; align-items: center; gap: 9px; font-size: 15px; font-weight: 600; white-space: nowrap; }
 .logo .brand-ic {
-  width: 26px; height: 26px; border-radius: 8px; display: block;
-  box-shadow: 0 2px 6px rgba(34, 112, 75, 0.22);
+  width: 26px; height: 26px; display: block;
+  filter: drop-shadow(0 2px 4px rgba(0, 71, 151, 0.22));
 }
 .logo i {
   width: 23px; height: 23px; border-radius: 7px; background: #1d1d1f; color: #fff;
@@ -792,8 +842,24 @@ watch([workRole, personalPage], loadAll)
 }
 .mi:hover { background: rgba(0, 0, 0, 0.035); }
 .mi.on { background: #fff; color: #0071e3; font-weight: 600; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04); }
-.mi .ic { width: 17px; text-align: center; font-size: 14px; }
 .mi .n { margin-left: auto; font-size: 10px; background: #ff3b30; color: #fff; min-width: 17px; height: 17px; border-radius: 9px; display: grid; place-items: center; padding: 0 4px; font-weight: 600; }
+.tab-icon-frame { display:grid; width:40px; height:36px; place-items:center; transition:transform .14s ease-out; }
+.tab-icon-motion {
+  position:relative; isolation:isolate; display:grid; place-items:center; color:#8090a1;
+  transform-origin:center 75%; transition:color .24s ease-out;
+}
+.tab-icon-motion::before {
+  position:absolute; z-index:-1; inset:5px -3px -1px; border-radius:50%;
+  background:#cce7ff; filter:blur(6px); opacity:0; transform:scale(.6); content:'';
+  transition:opacity .24s ease-out, transform .24s ease-out;
+}
+.animated-nav:is(:active, .pressed) .tab-icon-frame { transform:translateY(2px) scale(.89); }
+.animated-nav.on { --tab-fill:#9ed1ff; --tab-detail:#eaf5ff; }
+.animated-nav.on .tab-icon-motion { color:#145b9c; animation:tab-icon-pop .44s ease-out both; }
+.animated-nav.on .tab-icon-motion::before { opacity:.76; transform:scale(1); }
+.mi .tab-icon-frame { flex:0 0 22px; width:22px; height:22px; }
+.mi .tab-icon-motion :deep(svg) { width:22px; height:22px; }
+.side .mi:not(.on):hover .tab-icon-motion { color:#557697; }
 .side .me { margin: 22px 14px 0; padding-top: 16px; border-top: 1px solid #e8e8ed; display: flex; flex-direction: column; gap: 2px; font-size: 11.5px; color: #86868b; }
 .side .me b { color: #1d1d1f; font-size: 12.5px; }
 .side .me small { color: #0071e3; margin-top: 4px; }
@@ -833,14 +899,18 @@ watch([workRole, personalPage], loadAll)
 
 .tabs, .mobile-menu-button { display: none; }
 .mobile-nav-mask { position:fixed; inset:0; z-index:120; background:rgba(29,29,31,.4); display:flex; }
+.mobile-nav-leave-active.selecting { transition:opacity .24s ease-in; pointer-events:none; }
+.mobile-nav-leave-to { opacity:0; }
 .mobile-nav { width: min(86vw, 340px); height:100%; display:flex; flex-direction:column; background:#fff; box-shadow:12px 0 40px rgba(0,0,0,.12); padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px); }
+.mobile-nav:focus { outline:none; }
 .mobile-nav-head { display:flex; align-items:center; justify-content:space-between; padding:12px 20px; border-bottom:1px solid var(--line); font-size:17px; }
-.mobile-nav-head button { width:40px; height:40px; border:0; background:transparent; color:var(--t2); font-size:26px; }
+.mobile-nav-head button { display:grid; place-items:center; width:44px; height:44px; padding:0; border:0; border-radius:12px; background:transparent; color:var(--t2); font-size:26px; line-height:1; }
+.mobile-nav-head button:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
 .mobile-nav-account { display:grid; gap:4px; padding:18px 20px; background:#f6f9ff; font-size:15px; }
 .mobile-nav-account span { font-size:12px; color:var(--t2); }
 .mobile-nav-groups { min-height:0; overflow-y:auto; padding:6px 12px 22px; overscroll-behavior:contain; }
 .mobile-nav-groups h3 { padding:18px 12px 8px; font-size:12px; color:var(--t3); }
-.mobile-nav-groups .mi { min-height:44px; font-size:15px; }
+.mobile-nav-groups .mi { min-height:44px; font-size:15px; touch-action:manipulation; -webkit-tap-highlight-color:transparent; }
 .toast {
   position: fixed; left: 50%; bottom: 40px; transform: translateX(-50%) translateY(10px);
   background: rgba(29, 33, 41, 0.92); color: #fff; padding: 10px 18px; border-radius: 980px;
@@ -891,7 +961,7 @@ watch([workRole, personalPage], loadAll)
   .main :deep(.page-h), .main :deep(.page-h > .row), .main :deep(.filters) { flex-wrap:wrap; }
 }
 @media (max-width: 899px) {
-  .shell { --account-badge-width: 48px; min-height:100vh; min-height:100dvh; }
+  .shell { --account-badge-width:48px; --tab-dock-height:70px; min-height:100vh; min-height:100dvh; }
   .top { height:calc(56px + env(safe-area-inset-top,0px)); padding: env(safe-area-inset-top,0px) 16px 0; gap:10px; background:rgba(255,255,255,.96); }
   .mobile-menu-button { display:grid; place-items:center; flex:0 0 36px; width:36px; height:40px; padding:0; border:0; background:transparent; color:var(--t1); font-size:23px; }
   .logo { gap:7px; font-size:15px; }
@@ -901,7 +971,7 @@ watch([workRole, personalPage], loadAll)
   .tutorial-icon { width:17px; height:17px; }
   .bell { width:38px; height:38px; }
   .ctx, .search { display: none; }
-  .layout { display: block; max-width:none; margin:0; padding: 0 0 calc(88px + env(safe-area-inset-bottom,0px)); }
+  .layout { display:block; max-width:none; margin:0; padding:0 0 calc(var(--tab-dock-height) + 24px + env(safe-area-inset-bottom,0px)); }
   .side { display: none; }
   .work-area { display:block; }
   .main { padding: 32px 16px 0; }
@@ -910,23 +980,50 @@ watch([workRole, personalPage], loadAll)
   .rail-summary { display:none; }
   .rail .service-contacts { margin:12px 16px 0; }
   .tabs {
-    display: flex; position: fixed; left:0; right:0; bottom:0; height:calc(64px + env(safe-area-inset-bottom,0px)); padding-bottom:env(safe-area-inset-bottom,0px); z-index:70;
-    background: rgba(255, 255, 255, 0.96); backdrop-filter: blur(18px);
-    border-top: 1px solid rgba(0, 0, 0, 0.06);
+    position:fixed; inset:auto 0 0; z-index:70;
+    display:flex; justify-content:center;
+    padding:0 9px calc(6px + env(safe-area-inset-bottom,0px));
+    padding-left:max(9px, env(safe-area-inset-left,0px));
+    padding-right:max(9px, env(safe-area-inset-right,0px));
+    background:linear-gradient(transparent, #f5f5f7d9);
+    pointer-events:none;
   }
-  .tabs button {
-    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-    min-width:0; gap:4px; font-size:11px; color:#86868b; border:0; background:none; font-family:inherit;
+  .tab-dock {
+    display:flex; width:100%; max-width:560px; min-height:var(--tab-dock-height); padding:3px 5px;
+    border:1px solid #dce6ef; border-radius:23px;
+    background:#ffffffed; -webkit-backdrop-filter:blur(16px); backdrop-filter:blur(16px);
+    box-shadow:0 -3px 14px #2441630a, 0 5px 15px #24416316;
+    pointer-events:auto;
   }
-  .tabs button span { font-size:21px; line-height:1; }
-  .tabs button.on { color: #0071e3; font-weight: 600; }
+  .tab-button {
+    flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    min-width:0; gap:2px; padding:2px 0; border:0; border-radius:16px;
+    background:none; color:#657386; font:inherit; font-size:11px; line-height:1.25;
+    cursor:pointer; touch-action:manipulation; -webkit-tap-highlight-color:transparent;
+    transition:color .24s ease-out;
+  }
+  .tab-button:focus-visible { outline:2px solid var(--brand); outline-offset:-2px; }
+  .tab-label { white-space:nowrap; }
+  .tab-button.on { color:#075bab; font-weight:650; }
   .pop { position:fixed; top:calc(62px + env(safe-area-inset-top,0px)); right:12px; left:12px; width:auto; max-height:calc(100vh - 150px); overflow-y:auto; }
-  .toast { bottom:calc(84px + env(safe-area-inset-bottom,0px)); max-width:calc(100vw - 32px); text-align:center; }
+  .toast { bottom:calc(var(--tab-dock-height) + 16px + env(safe-area-inset-bottom,0px)); max-width:calc(100vw - 32px); text-align:center; }
   .main :deep(.page-h) { flex-wrap:wrap; gap:12px; }
   .main :deep(.page-h > .row) { flex:1 1 100%; min-width:0; }
   .main :deep(.page-h .inp) { width:100% !important; min-width:0; flex:1; }
   .main :deep(.kpis) { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
   .main :deep(.grid2) { grid-template-columns: minmax(0, 1fr) !important; }
+}
+@keyframes tab-icon-pop {
+  0% { transform:translateY(2px) scale(.85) rotate(-7deg); }
+  46% { transform:translateY(-4px) scale(1.15) rotate(6deg); }
+  75% { transform:translateY(1px) scale(.98) rotate(-2deg); }
+  100% { transform:none; }
+}
+@media (prefers-reduced-motion:reduce) {
+  .tab-button, .tab-icon-frame, .tab-icon-motion, .tab-icon-motion::before { transition:none; }
+  .mobile-nav-leave-active.selecting { transition:none; }
+  .animated-nav.on .tab-icon-motion { animation:none; }
+  .animated-nav:is(:active, .pressed) .tab-icon-frame { transform:none; }
 }
 @media (max-width:350px) {
   .top { gap:8px; padding-inline:12px; }

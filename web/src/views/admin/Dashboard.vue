@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PendingReportBadges from '../../components/PendingReportBadges.vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { assetRequestApi, serviceContactApi, statsApi, ticketApi, type ServiceContactRoster } from '../../api'
@@ -85,7 +86,7 @@ onUnmounted(() => clearInterval(contactTimer))
             <span class="small muted">{{ remainText(t.remainMinutes, t.workTime, t.slaPausedAt) || statusName(t.status) }}</span>
           </div>
           <div class="mm">{{ t.no }} · {{ t.creatorName }} · {{ t.cat1 }}</div>
-          <span v-if="t.pendingReportCount" class="pill b-orange">{{ t.pendingReportCount }} 条待补报</span>
+          <PendingReportBadges :counts="t.pendingByType" :repair-count="t.pendingReportCount" />
         </div>
       </div>
 
@@ -102,7 +103,7 @@ onUnmounted(() => clearInterval(contactTimer))
             <span class="pill" :class="REQ_STATUS_CLASS[r.status]">{{ REQ_STATUS_NAME[r.status] }}</span>
           </div>
           <div class="mm">{{ r.no }} · {{ r.applicant }} · {{ r.assetName || r.assetNo }}</div>
-          <span v-if="r.pendingReportCount" class="pill b-orange">{{ r.pendingReportCount }} 条待补报</span>
+          <PendingReportBadges :counts="r.pendingByType" :repair-count="r.pendingReportCount" />
         </div>
 
         <div v-if="duty || auth.can('settings.manage')" class="duty">

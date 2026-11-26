@@ -1,10 +1,15 @@
-import type { MissingReportRequester } from '../api'
+import type { MissingReportRequester, MissingReportType } from '../api'
 
 export interface MissingReportDraft {
-  registration: { title: string; description: string; channel: string; completedAt: string }
+  registration: {
+    title: string; description: string; channel: string; completedAt: string
+    businessType?: MissingReportType; assetNo?: string; newAssetNo?: string; expectReturn?: string
+  }
   requester?: MissingReportRequester
-  evidence?: File
+  evidence?: File[]
 }
+
+type StoredDraft = Omit<MissingReportDraft, 'evidence'> & { evidence?: File | File[] }
 
 const storeName = 'registration'
 let connection: Promise<IDBDatabase> | undefined
@@ -33,7 +38,11 @@ export async function readMissingReportDraft(account: string): Promise<MissingRe
   const database = await openDatabase()
   const request = database.transaction(storeName).objectStore(storeName).get(account)
   return new Promise((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result)
+    request.onsuccess = () => {
+      const saved: StoredDraft | undefined = request.result
+      const evidence = saved?.evidence
+      resolve(saved && { ...saved, evidence: evidence && (Array.isArray(evidence) ? evidence : [evidence]) })
+    }
     request.onerror = () => reject(request.error)
   })
 }

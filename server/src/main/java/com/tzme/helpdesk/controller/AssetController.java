@@ -66,7 +66,6 @@ public class AssetController {
     @GetMapping("/borrow-due")
     @com.tzme.helpdesk.security.RequiresPermission("asset.view")
     public ApiResponse<BorrowDueService.DueAssets> borrowDue() {
-        checkPersonalAssetAccess();
         return ApiResponse.ok(borrowDue.mine());
     }
 

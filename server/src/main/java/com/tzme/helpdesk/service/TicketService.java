@@ -53,8 +53,8 @@ public class TicketService {
         }
         int p = Math.max(1, page);
         int s = Math.max(1, Math.min(100, size));
-        List<Ticket> rows = ticketMapper.list(status, open, keyword, creatorId, null, priority, cat1, assetNo, (p - 1) * s, s);
-        if (!com.tzme.helpdesk.security.Roles.isItOrAdmin(u.role())) rows.forEach(row -> row.setPendingReportCount(null));
+        List<Ticket> rows = ticketMapper.list(status, open, keyword, creatorId, null, priority, cat1, assetNo,
+                (p - 1) * s, s, MissingReportGuard.staffCountDate(u));
         long total = ticketMapper.count(status, open, keyword, creatorId, null, priority, cat1, assetNo);
         rows.forEach(this::fillRemain);
         fillQueue(rows);
@@ -64,10 +64,10 @@ public class TicketService {
     public TicketDetailVO detail(String no) {
         LoginUser u = CurrentUser.require();
         Ticket t = requireTicket(no);
-        if (!u.canManageTickets() && !t.getCreatorId().equals(u.id())) {
+        if (!u.canManageTickets() && !u.id().equals(t.getCreatorId())) {
             throw new BizException(403, "无权查看该工单");
         }
-        if (com.tzme.helpdesk.security.Roles.isItOrAdmin(u.role())) t.setPendingReportCount(missingReports.pending(t.getCreatorId()));
+        if (com.tzme.helpdesk.security.Roles.isItOrAdmin(u.role())) t.setPendingByType(missingReports.pendingByType(t.getCreatorId()));
         TicketDetailVO vo = new TicketDetailVO();
         vo.setTicket(fillRemain(t));
         fillQueue(List.of(t));
@@ -343,7 +343,7 @@ public class TicketService {
     }
 
     private boolean canHandleInfo(Ticket ticket, LoginUser user) {
-        return user.hasPermission("ticket.handle") && (user.hasPermission("ticket.view.all") || user.id().equals(ticket.getAssigneeId()));
+        return user.hasPermission("ticket.handle") && (user.canManageTickets() || user.id().equals(ticket.getAssigneeId()));
     }
 
     private void recordFirstResponse(Ticket ticket, LocalDateTime now) {

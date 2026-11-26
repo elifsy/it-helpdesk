@@ -27,6 +27,17 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+/* 页面长短变化时保留滚动条空间，避免正文与顶栏横向跳动。 */
+html {
+  scrollbar-gutter: stable;
+}
+
+@supports not (scrollbar-gutter: stable) {
+  html {
+    overflow-y: scroll;
+  }
+}
+
 html,
 body,
 #app {

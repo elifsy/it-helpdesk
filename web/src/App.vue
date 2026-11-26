@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, provide, ref } from 'vue'
+import { computed, onMounted, onUnmounted, provide, ref } from 'vue'
 import { useAuthStore } from './stores/auth'
 import router from './router'
-import { DEMO_USERS, homeForRoles, routeAllowed } from './config/menus'
+import { canViewAllTickets, DEMO_USERS, homeForRoles, routeAllowed } from './config/menus'
 import { authApi } from './api'
 import { navigationFailure, reloadRoute } from './utils/navigation'
 import FeatureTutorial from './components/FeatureTutorial.vue'
 import { openTutorialPicker } from './config/tutorials'
 
 const auth = useAuthStore()
+const sessionView = computed(() => [auth.user?.id, auth.user?.role, canViewAllTickets(auth.roles, auth.permissions), auth.can('ticket.view.own')].join(':'))
 const ready = ref(false)
 const error = ref('')
 const tutorial = ref<InstanceType<typeof FeatureTutorial>>()
@@ -40,8 +41,11 @@ let refreshing = false
 async function refreshPermissions() {
   if (!ready.value || refreshing) return
   refreshing = true
+  const token = auth.token
   try {
-    auth.user = await authApi.me()
+    const user = await authApi.me()
+    if (token !== auth.token) return
+    auth.user = user
     if (!routeAllowed(auth.roles, router.currentRoute.value.fullPath, auth.permissions)) await router.replace(homeForRoles(auth.roles, auth.permissions))
   } catch { /* 下次请求继续由后端校验 */ }
   finally { refreshing = false }
@@ -52,7 +56,7 @@ onUnmounted(() => { window.removeEventListener('auth-expired', onExpired); windo
 
 <template>
   <div v-if="!ready" class="boot">
-    <img class="boot-logo" src="/icon-96.png" alt="IT 报修平台" width="72" height="72" />
+    <img class="boot-logo" src="/icon-96.png?v=2" alt="IT 报修平台" width="72" height="72" />
     <div v-if="!error" class="spinner" />
     <p>{{ error ? (navigationFailure?.message || error) : '正在进入 IT 报修平台…' }}</p>
     <button v-if="error" class="btn pri" @click="navigationFailure ? reloadRoute(navigationFailure.path) : start()">重新尝试</button>
@@ -60,7 +64,7 @@ onUnmounted(() => { window.removeEventListener('auth-expired', onExpired); windo
       <button v-for="user in DEMO_USERS" :key="user.name" class="btn sm" @click="chooseDemo(user.name)">{{ user.name }} · {{ user.tag }}</button>
     </div>
   </div>
-  <router-view v-else />
+  <router-view v-else :key="sessionView" />
   <FeatureTutorial v-if="ready && auth.user && !auth.roles.includes('SUPER_ADMIN')" ref="tutorial" />
   <div v-if="ready && navigationFailure" class="navigation-error" role="alert">
     <span>{{ navigationFailure.message }}</span>
@@ -86,8 +90,7 @@ onUnmounted(() => { window.removeEventListener('auth-expired', onExpired); windo
 .boot-logo {
   width: 72px;
   height: 72px;
-  border-radius: 20px;
-  box-shadow: 0 10px 26px rgba(34, 112, 75, 0.22);
+  filter: drop-shadow(0 10px 18px rgba(0, 71, 151, 0.22));
 }
 .spinner {
   width: 26px;

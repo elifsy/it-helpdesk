@@ -157,13 +157,35 @@ class IncomingNotificationDeliveryTest {
         item.setTitle("工单已超时");
         item.setType("SLA");
         item.setRefNo("IT-TEST-0001");
-        when(notifies.listByUser(11L, engineer.getName())).thenReturn(List.of(item));
+        when(notifies.listByUser(11L, engineer.getName(), true, true)).thenReturn(List.of(item));
 
         var service = new NotifyService(notifies, users, dingTalk, permissions, settings());
         service.send(11L, engineer.getName(), "工单已超时", "请尽快处理", "SLA", "IT-TEST-0001");
         verify(dingTalk).sendWorkNotify("ding-it", "工单已超时", "请尽快处理",
                 "https://helpdesk.example/ams/?notice=%2Fticket%2FIT-TEST-0001", "处理超时工单");
         assertEquals("/ticket/IT-TEST-0001", service.list(login).get(0).getAction().path());
+    }
+
+    @Test void sendsTicketNotificationsToAnOrdinaryAccountOnlyForItsOwnTicket() {
+        var dingTalk = mock(DingTalkService.class);
+        when(dingTalk.enabled()).thenReturn(true);
+        var users = mock(UserMapper.class);
+        var notifies = mock(NotifyMapper.class);
+        var permissions = mock(RolePermissionService.class);
+        var employee = user(11L, "ding-user");
+        employee.setRole("USER");
+        when(users.findById(11L)).thenReturn(employee);
+        when(permissions.resolve(employee)).thenReturn(new LoginUser(11L, employee.getName(), "USER", "技术中心"));
+        when(notifies.ticketCreatorId("IT-OWN")).thenReturn(11L);
+        when(notifies.ticketCreatorId("IT-OTHER")).thenReturn(12L);
+
+        var service = new NotifyService(notifies, users, dingTalk, permissions, settings());
+        service.send(11L, employee.getName(), "工单待确认", "本人通知", "TICKET", "IT-OWN");
+        service.send(11L, employee.getName(), "工单已超时", "他人工单", "SLA", "IT-OTHER");
+
+        verify(dingTalk).sendWorkNotify("ding-user", "工单待确认", "本人通知",
+                "https://helpdesk.example/ams/?notice=%2Fticket%2FIT-OWN", "确认结果");
+        verify(dingTalk, never()).sendWorkNotify(eq("ding-user"), eq("工单已超时"), any(), any(), any());
     }
 
     private RuntimeSettingsService settings() {

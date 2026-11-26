@@ -28,7 +28,7 @@ public final class Permissions {
         cap("attachment.delete","删除业务附件","附件",false),
         cap("user.manage","用户与角色管理","系统管理",false),
         cap("dept.manage","部门管理","系统管理",false),
-        cap("settings.manage","运行配置、SLA 与存储","系统管理",false),
+        cap("settings.manage","服务运行配置","系统管理",false),
         cap("dict.manage","分类与解决代码管理","系统管理",false),
         cap("audit.view","查看审计日志","系统管理",true),
         cap("contact.sync","同步通讯录","系统管理",false),
@@ -36,16 +36,28 @@ public final class Permissions {
     );
     public static final List<String> SELF_SERVICE = List.of("ticket.view.own", "ticket.create", "ticket.confirm", "asset.view",
             "request.view.own", "request.create", "kb.view", "kb.vote", "attachment.upload", "attachment.delete");
+    private static final Set<String> STAFF_TICKET_PERMISSIONS = Set.of("ticket.view.all", "ticket.accept", "ticket.dispatch", "ticket.handle");
+    private static final Set<String> SUPER_ADMIN_PERMISSIONS = Set.of("audit.view");
     private Permissions() { }
     private static Capability cap(String key,String name,String group,boolean readOnly,String... requires) {
         return new Capability(key,name,group,readOnly,List.of(requires));
     }
     public static List<String> defaults(String role) {
-        if (Roles.isAdmin(role)) return CATALOG.stream().map(Capability::key).toList();
+        if (Roles.isAdmin(role)) return CATALOG.stream().map(Capability::key).filter(key -> canGrant(role, key)).toList();
         List<String> result = new ArrayList<>(SELF_SERVICE);
         if ("VIEWER".equals(role)) result.addAll(List.of("ticket.view.all","request.view.all","stats.view"));
         if ("IT".equals(role)) result.addAll(List.of("ticket.view.all","ticket.accept","ticket.dispatch","ticket.handle","asset.create","request.view.all","request.approve","stats.view","kb.manage"));
         return result;
+    }
+    public static boolean canGrant(String role, String key) {
+        if (SUPER_ADMIN_PERMISSIONS.contains(key)) return Roles.SUPER_ADMIN.equals(role);
+        return !"USER".equals(role) || !STAFF_TICKET_PERMISSIONS.contains(key);
+    }
+    public static List<String> allowedForRole(String role, List<String> keys) {
+        return keys.stream().filter(key -> canGrant(role, key)).toList();
+    }
+    public static void requireSuperAdmin() {
+        if (!CurrentUser.require().hasRole(Roles.SUPER_ADMIN)) throw new BizException(403,"仅超级管理员可访问");
     }
     public static void require(String key) {
         if (!CurrentUser.require().hasPermission(key)) throw new BizException(403,"当前角色没有该操作权限");

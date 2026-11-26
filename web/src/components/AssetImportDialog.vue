@@ -1,34 +1,22 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, shallowRef } from 'vue'
 import { assetApi, type AssetCategory } from '../api'
 import { ASSET_WARRANTY_OPTIONS, NEW_ASSET_STATUSES } from '../utils/asset-form'
 import { DEVICE_ICONS } from '../utils/deviceIcons'
+import AttachmentFolder from './AttachmentFolder.vue'
 
 const props = defineProps<{ categories: AssetCategory[] }>()
 const emit = defineEmits<{ close: []; imported: [count: number] }>()
 const categoryNames = computed(() => props.categories.map(category => category.name).join('、'))
 const iconOptions = DEVICE_ICONS.map(icon => `${icon.label} ${icon.key}`).join('、')
-const file = ref<File>()
+const files = shallowRef<File[]>([])
+const file = computed(() => files.value[0])
 const uploading = ref(false)
 const downloading = ref(false)
 const error = ref('')
 
 function close() {
   if (!uploading.value && !downloading.value) emit('close')
-}
-
-function chooseFile(event: Event) {
-  const input = event.target as HTMLInputElement
-  const selected = input.files?.[0]
-  file.value = undefined
-  error.value = ''
-  if (!selected) return
-  if (!/\.xlsx$/i.test(selected.name) || selected.size === 0 || selected.size > 5 * 1024 * 1024) {
-    error.value = '请选择不超过 5 MB 的非空 .xlsx 文件'
-    input.value = ''
-    return
-  }
-  file.value = selected
 }
 
 async function downloadTemplate() {
@@ -91,11 +79,11 @@ async function importFile() {
             <div><dt>卡片图标</dt><dd>留空或填 auto 会自动匹配。也可以填写对应英文代码，例如 {{ iconOptions }}。</dd></div>
           </dl>
         </details>
-        <label class="import-file">
-          选择 Excel 文件
-          <input type="file" class="inp" accept=".xlsx" :disabled="uploading || downloading" @change="chooseFile" />
+        <div class="import-file">
+          <AttachmentFolder v-model="files" kind="excel" :max-files="1" :max-file-mb="5"
+            :disabled="uploading || downloading" @update:model-value="error = ''" />
           <span class="small muted">每次最多导入 500 台，文件上限 5 MB。</span>
-        </label>
+        </div>
         <p v-if="error" class="import-error" role="alert">{{ error }}</p>
       </div>
       <div class="dlg-f">
@@ -118,6 +106,5 @@ async function importFile() {
 .import-guide dt { font-weight: 600; }
 .import-guide dd { margin: 2px 0 0; color: var(--t2); overflow-wrap: anywhere; }
 .import-file { display: grid; gap: 7px; font-size: 13px; }
-.import-file .inp { width: 100%; height: auto; min-width: 0; }
 .import-error { margin: 12px 0 0; padding: 10px 12px; background: #fff0ee; color: #b32921; border-radius: 10px; font-size: 13px; }
 </style>

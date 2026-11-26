@@ -14,7 +14,11 @@ public class AssetRequest {
     private String applicant;
     @com.fasterxml.jackson.annotation.JsonIgnore
     private Long applicantId;
-    private Long pendingReportCount;
+    private PendingReportCounts pendingByType;
+
+    public Long getPendingReportCount() {
+        return pendingByType == null ? null : pendingByType.getRepair();
+    }
     private String dept;
     private String reason;
     private LocalDate expectReturn;

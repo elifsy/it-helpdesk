@@ -2,9 +2,10 @@ export type WorkRole = 'emp' | 'it' | 'admin' | 'viewer'
 export const ROLE_NAMES: Record<string, string> = { USER: '普通用户', IT: 'IT', ADMIN: '管理员', VIEWER: '可查看用户', SUPER_ADMIN: '超级管理员' }
 export const CONFIG_PERMISSIONS: Record<string, string[]> = {
   '': ['settings.manage'], users: ['user.manage'], depts: ['dept.manage', 'contact.sync'], matrix: ['role.manage'],
-  duty: ['settings.manage'], sla: ['settings.manage'], dict: ['dict.manage'], audit: ['audit.view'], storage: ['settings.manage']
+  duty: ['settings.manage'], dict: ['dict.manage']
 }
-export interface MenuItem { path: string; icon: string; label: string; badge?: 'pending' | 'approvals'; permission?: string }
+const superAdminConfigTabs = new Set(['sla', 'audit', 'storage', 'jobs'])
+export interface MenuItem { path: string; label: string; badge?: 'pending' | 'approvals'; permission?: string }
 export interface MenuGroup { title: string; items: MenuItem[] }
 export interface RoleMeta { label: string; home: string; initial: string; avatar: string; color: string }
 export const ROLE_META: Record<WorkRole, RoleMeta> = {
@@ -19,6 +20,9 @@ export function roleFromRoles(roles: string[] = []): WorkRole {
   if (roles.includes('VIEWER')) return 'viewer'
   return 'emp'
 }
+export function canViewAllTickets(roles: string[], permissions: string[]): boolean {
+  return roleFromRoles(roles) !== 'emp' && permissions.includes('ticket.view.all')
+}
 export function routeAllowed(roles: string[], fullPath: string, permissions: string[] = []): boolean {
   const [path, query = ''] = fullPath.split('?')
   const has = (...keys: string[]) => keys.some(key => permissions.includes(key))
@@ -27,14 +31,14 @@ export function routeAllowed(roles: string[], fullPath: string, permissions: str
   if (path === '/admin/missing-reports') return roles.includes('IT') || roleFromRoles(roles) === 'admin'
   if (path.startsWith('/admin/config')) {
     const tab = new URLSearchParams(query).get('tab') || ''
-    if (tab === 'jobs') return roles.includes('SUPER_ADMIN')
+    if (superAdminConfigTabs.has(tab)) return roles.includes('SUPER_ADMIN')
     return !!CONFIG_PERMISSIONS[tab] && has(...CONFIG_PERMISSIONS[tab])
   }
   if (path === '/new') return has('ticket.create')
-  if (path === '/tickets' || path.startsWith('/ticket/')) return has('ticket.view.own', 'ticket.view.all')
+  if (path === '/tickets' || path.startsWith('/ticket/')) return has('ticket.view.own') || canViewAllTickets(roles, permissions)
   if (path === '/assets') return has('asset.view')
   if (path === '/kb' || path === '/admin/kb') return has('kb.view')
-  if (path.startsWith('/admin/ticket')) return has('ticket.view.all')
+  if (path.startsWith('/admin/ticket')) return canViewAllTickets(roles, permissions)
   if (path === '/admin/dashboard' || path === '/admin/stats') return has('stats.view')
   if (path === '/admin/approvals') return has('request.view.all')
   if (path === '/admin/ding-approval' || path === '/admin/incoming-notifications') return has('settings.manage')
@@ -54,45 +58,45 @@ export function homeForRoles(roles: string[] = [], permissions: string[] = []): 
 }
 const business: MenuGroup[] = [
   { title: '服务台', items: [
-    { path: '/admin/dashboard', icon: '▧', label: '工作台' },
-    { path: '/admin/tickets', icon: '▤', label: '工单中心' },
-    { path: '/admin/missing-reports', icon: '▤', label: '紧急事项补报' }
+    { path: '/admin/dashboard', label: '工作台' },
+    { path: '/admin/tickets', label: '工单中心' },
+    { path: '/admin/missing-reports', label: '补报与补交登记' }
   ] },
   { title: '资产与知识', items: [
-    { path: '/admin/assets', icon: '▣', label: '资产台账' },
-    { path: '/admin/approvals', icon: '⇄', label: '资产申请' },
-    { path: '/admin/purchase', icon: '＋', label: '采购管理', permission: 'request.approve' },
-    { path: '/admin/stats', icon: '▧', label: '统计看板' }
+    { path: '/admin/assets', label: '资产台账' },
+    { path: '/admin/approvals', label: '资产申请' },
+    { path: '/admin/purchase', label: '采购管理', permission: 'request.approve' },
+    { path: '/admin/stats', label: '统计看板' }
   ] }
 ]
 const employeeBusiness = business.filter(group => group.title === '服务台')
   .map(group => ({ ...group, items: group.items.filter(item => item.path !== '/new') }))
 const management: MenuGroup[] = [
   { title: '知识管理', items: [
-    { path: '/admin/kb', icon: '▤', label: '知识草稿与发布', permission: 'kb.manage' }
+    { path: '/admin/kb', label: '知识草稿与发布', permission: 'kb.manage' }
   ] },
   { title: '组织与权限', items: [
-    { path: '/admin/config?tab=users', icon: '◎', label: '用户与角色' },
-    { path: '/admin/config?tab=depts', icon: '⌘', label: '部门与通讯录' },
-    { path: '/admin/config?tab=matrix', icon: '▦', label: '角色权限配置' }
+    { path: '/admin/config?tab=users', label: '用户与角色' },
+    { path: '/admin/config?tab=depts', label: '部门与通讯录' },
+    { path: '/admin/config?tab=matrix', label: '角色权限配置' }
   ] },
   { title: '系统管理', items: [
-    { path: '/admin/config', icon: '⚙', label: '运行配置' },
-    { path: '/admin/ding-approval', icon: '⇢', label: '钉钉审批', permission: 'settings.manage' },
-    { path: '/admin/incoming-notifications', icon: '♧', label: '通知接收人', permission: 'settings.manage' },
-    { path: '/admin/config?tab=duty', icon: '◷', label: 'IT 服务联系人' },
-    { path: '/admin/config?tab=sla', icon: '◷', label: 'SLA 与优先级' },
-    { path: '/admin/config?tab=dict', icon: '▤', label: '字典与分类' },
-    { path: '/admin/config?tab=audit', icon: '≡', label: '审计日志' },
-    { path: '/admin/config?tab=storage', icon: '▣', label: '附件与存储' },
-    { path: '/admin/config?tab=jobs', icon: '◔', label: '定时任务' }
+    { path: '/admin/config', label: '运行配置' },
+    { path: '/admin/ding-approval', label: '钉钉审批', permission: 'settings.manage' },
+    { path: '/admin/incoming-notifications', label: '通知接收人', permission: 'settings.manage' },
+    { path: '/admin/config?tab=duty', label: 'IT 服务联系人' },
+    { path: '/admin/config?tab=sla', label: 'SLA 与优先级' },
+    { path: '/admin/config?tab=dict', label: '字典与分类' },
+    { path: '/admin/config?tab=audit', label: '审计日志' },
+    { path: '/admin/config?tab=storage', label: '附件与存储' },
+    { path: '/admin/config?tab=jobs', label: '定时任务' }
   ] }
 ]
 const personal: MenuGroup[] = [
     { title: '我的服务', items: [
-      { path: '/home', icon: '▦', label: '首页' }, { path: '/new', icon: '＋', label: '我要报修' },
-      { path: '/tickets', icon: '≡', label: '我的工单' }, { path: '/assets', icon: '▣', label: '资产服务' },
-      { path: '/kb', icon: '▤', label: '知识库' }
+      { path: '/home', label: '首页' }, { path: '/new', label: '我要报修' },
+      { path: '/tickets', label: '我的工单' }, { path: '/assets', label: '资产服务' },
+      { path: '/kb', label: '知识库' }
     ] }
 ]
 const serviceDesk: MenuGroup[] = business.filter(group => group.title === '服务台')
@@ -105,27 +109,27 @@ export const MENUS: Record<WorkRole, MenuGroup[]> = {
   viewer: [...personal, ...business, ...management]
 }
 const personalTabs: MenuItem[] = [
-  { path: '/home', icon: '▦', label: '首页' }, { path: '/new', icon: '＋', label: '报修' },
-  { path: '/tickets', icon: '≡', label: '我的工单' }, { path: '/assets', icon: '▣', label: '资产' }
+  { path: '/home', label: '首页' }, { path: '/new', label: '报修' },
+  { path: '/tickets', label: '我的工单' }, { path: '/assets', label: '资产' }
 ]
 export const TABS: Record<WorkRole, MenuItem[]> = {
   emp: [
-    { path: '/home', icon: '▦', label: '首页' }, { path: '/new', icon: '＋', label: '报修' },
-    { path: '/tickets', icon: '≡', label: '工单' }, { path: '/assets', icon: '▣', label: '资产' },
-    { path: '/kb', icon: '▤', label: '知识' }
+    { path: '/home', label: '首页' }, { path: '/new', label: '报修' },
+    { path: '/tickets', label: '工单' }, { path: '/assets', label: '资产' },
+    { path: '/kb', label: '知识' }
   ],
   it: [
-    ...personalTabs, { path: '/admin/dashboard', icon: '▧', label: '工作台' }
+    ...personalTabs, { path: '/admin/dashboard', label: '工作台' }
   ],
   admin: [
-    ...personalTabs, { path: '/admin/config?tab=matrix', icon: '⚙', label: '管理' }
+    ...personalTabs, { path: '/admin/config?tab=matrix', label: '管理' }
   ],
   viewer: [
-    ...personalTabs, { path: '/admin/tickets', icon: '▤', label: '工单中心' }
+    ...personalTabs, { path: '/admin/tickets', label: '工单中心' }
   ]
 }
 export function titleFor(role: WorkRole, fullPath: string): string {
-  if (fullPath === '/missing-reports') return '我的待补报事项'
+  if (fullPath === '/missing-reports') return '我的待补交事项'
   for (const group of MENUS[role]) for (const item of group.items) if (item.path === fullPath) return item.label
   if (fullPath.startsWith('/admin/tickets?')) return '工单中心'
   if (fullPath.startsWith('/admin/assets?')) return '资产台账'
@@ -137,6 +141,7 @@ export function titleFor(role: WorkRole, fullPath: string): string {
 export const DEMO_USERS = [
   { name: '谈帥宏', tag: ROLE_NAMES.USER },
   { name: '刘宇泽', tag: ROLE_NAMES.USER },
+  { name: '朱思宇', tag: ROLE_NAMES.USER },
   { name: '林凤新', tag: ROLE_NAMES.IT },
   { name: '邵昕炜', tag: ROLE_NAMES.SUPER_ADMIN }
 ]

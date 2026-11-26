@@ -27,7 +27,7 @@ INSERT INTO sys_user (id, ding_user_id, name, employee_no, dept_id, dept_name, m
 
 -- 本地演示身份选择器使用的账号，不绑定钉钉身份。
 INSERT INTO sys_user (name, role) VALUES
- ('谈帥宏', 'USER'), ('刘宇泽', 'USER'), ('林凤新', 'IT'), ('邵昕炜', 'SUPER_ADMIN');
+ ('谈帥宏', 'USER'), ('刘宇泽', 'USER'), ('林凤新', 'IT'), ('邵昕炜', 'SUPER_ADMIN'), ('朱思宇', 'USER');
 
 -- IT 资产
 INSERT INTO it_asset (no, name, category, sn, user_name, location, buy_date, warranty, warranty_end, status, borrower, borrow_due) VALUES

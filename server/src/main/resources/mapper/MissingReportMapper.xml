@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tzme.helpdesk.mapper.MissingReportMapper">
+  <resultMap id="pendingCounts" type="com.tzme.helpdesk.domain.PendingReportCounts">
+    <result property="repair" column="supplement_repair"/>
+    <result property="receive" column="supplement_receive"/>
+    <result property="borrow" column="supplement_borrow"/>
+    <result property="replace" column="supplement_replace"/>
+    <result property="returnCount" column="supplement_return_count"/>
+    <result property="overdueReturn" column="supplement_overdue_return"/>
+  </resultMap>
+
+  <sql id="countColumns">
+    coalesce(sum(case when business_type='REPAIR' then 1 else 0 end),0) as supplement_repair,
+    coalesce(sum(case when business_type='RECEIVE' then 1 else 0 end),0) as supplement_receive,
+    coalesce(sum(case when business_type='BORROW' then 1 else 0 end),0) as supplement_borrow,
+    coalesce(sum(case when business_type='REPLACE' then 1 else 0 end),0) as supplement_replace,
+    coalesce(sum(case when business_type='RETURN' then 1 else 0 end),0) as supplement_return_count,
+    coalesce(sum(case when business_type='OVERDUE_RETURN' then 1 else 0 end),0) as supplement_overdue_return
+  </sql>
+
+  <sql id="pendingRows">
+    select m.requester_id, m.business_type from it_missing_report m where m.status='PENDING'
+      ${reportScope}
+    union all
+    select a.borrower_id, 'OVERDUE_RETURN' from it_asset a
+      where a.status='借出中' and a.borrower_id is not null and a.borrow_due &lt; #{supplementDate}
+      ${assetScope}
+      and not exists (
+        select 1 from it_missing_report r
+        where r.requester_id=a.borrower_id and r.asset_no=a.no and r.business_type='RETURN' and r.status='PENDING'
+      )
+      and not exists (
+        select 1 from it_asset_request ar
+        where ar.asset_no=a.no and ar.type='RETURN' and ar.status in ('PENDING','APPROVED')
+          and coalesce(ar.applicant_id, (
+            select case when count(*)=1 then min(u.id) end from sys_user u where u.name=ar.applicant
+          ))=a.borrower_id
+      )
+  </sql>
+
+  <sql id="pendingByRequester">
+    left join (
+      select requester_id as supplement_requester_id, <include refid="com.tzme.helpdesk.mapper.MissingReportMapper.countColumns"/>
+      from (
+        <include refid="com.tzme.helpdesk.mapper.MissingReportMapper.pendingRows">
+          <property name="reportScope" value=""/>
+          <property name="assetScope" value=""/>
+        </include>
+      ) pending
+      group by requester_id
+    ) supplements
+  </sql>
+
+  <select id="pendingCounts" resultMap="pendingCounts">
+    select <include refid="countColumns"/>
+    from (
+      <include refid="pendingRows">
+        <property name="reportScope" value="and m.requester_id=#{id}"/>
+        <property name="assetScope" value="and a.borrower_id=#{id}"/>
+      </include>
+    ) pending
+  </select>
+</mapper>

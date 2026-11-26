@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { adminApi, assetCategoryApi, authApi, metaApi, serviceContactApi, type JobSettings, type JobStatus, type ServiceContactMember, type ServiceContactPerson, type ServiceContactRoster } from '../../api'
 import ContactLeaveStatus from '../../components/ContactLeaveStatus.vue'
@@ -40,7 +40,11 @@ const users = ref<any[]>([])
 const userTotal = ref(0)
 const userPage = ref(1)
 const keyword = ref('')
+const userQuery = computed(() => keyword.value.trim())
 const status = ref('')
+const usersLoading = ref(false)
+const userLoadError = ref('')
+let userLoadVersion = 0
 const departments = ref<any[]>([])
 const engineers = ref<PersonOption[]>([])
 const codes = ref<any[]>([])
@@ -96,7 +100,7 @@ function toggleHandover(type: string, name: string) {
 function applySettings(value: any) {
   if (value && !value.approvalProcessCodes) value.approvalProcessCodes = { RECEIVE: '', BORROW: '', REPLACE: '', RETURN: '' }
   if (value && !value.handoverCategories) value.handoverCategories = { RECEIVE: [], BORROW: [], REPLACE: [], RETURN: [] }
-  if (value && !value.slaCalendar) value.slaCalendar = { weekdays: [1,2,3,4,5,6], start: '08:00', end: '17:00', holidays: [], pauseForInfo: true, responseHours: [1,2,4,8] }
+  if (isSuperAdmin.value && value && !value.slaCalendar) value.slaCalendar = { weekdays: [1,2,3,4,5,6], start: '08:00', end: '17:00', holidays: [], pauseForInfo: true, responseHours: [1,2,4,8] }
   settings.value = value
   categoryRows.value = Object.fromEntries(TICKET_TYPES.map(type => [type.v,
     Object.entries(value.categoriesByType?.[type.v] || {}).map(([name, children]) => ({ name, children: (children as string[]).join('，') }))]))
@@ -139,10 +143,27 @@ function bindContact(member: ServiceContactMember, person: ServiceContactPerson)
   member.name = person.name
   member.userId = person.id
 }
-async function loadUsers() {
-  const r = await adminApi.users({ keyword: keyword.value, status: status.value, page: userPage.value })
-  users.value = r.list
-  userTotal.value = r.total
+async function loadUsers(page = userPage.value, debounce = false) {
+  const version = ++userLoadVersion
+  userPage.value = page
+  usersLoading.value = true
+  userLoadError.value = ''
+  if (debounce) await new Promise(resolve => setTimeout(resolve, 200))
+  if (version !== userLoadVersion) return
+
+  try {
+    const result = await adminApi.users({ keyword: userQuery.value, status: status.value, page })
+    if (version !== userLoadVersion) return
+    users.value = result.list
+    userTotal.value = result.total
+  } catch (e: unknown) {
+    if (version !== userLoadVersion) return
+    users.value = []
+    userTotal.value = 0
+    userLoadError.value = e instanceof Error ? e.message : '用户查询失败，请重试'
+  } finally {
+    if (version === userLoadVersion) usersLoading.value = false
+  }
 }
 async function loadAudit() {
   const r = await adminApi.audit({ keyword: auditKeyword.value, page: auditPage.value })
@@ -302,7 +323,20 @@ onMounted(async () => {
   await loadSection()
   try { handoverCats.value = await assetCategoryApi.list() } catch { /* 无资产查看权限时忽略 */ }
 })
-watch(tab, () => { dialog.value = ''; void loadSection() })
+watch([userQuery, status], ([query, currentStatus], [, previousStatus]) => {
+  if (tab.value === 'users' && canViewSection.value) {
+    void loadUsers(1, Boolean(query) && currentStatus === previousStatus)
+  }
+})
+watch(tab, () => {
+  userLoadVersion++
+  dialog.value = ''
+  void loadSection()
+})
+onUnmounted(() => {
+  loadVersion++
+  userLoadVersion++
+})
 </script>
 
 <template>
@@ -320,14 +354,14 @@ watch(tab, () => { dialog.value = ''; void loadSection() })
 
     <template v-if="(settings || tab === 'jobs') && !loading && canViewSection">
       <template v-if="!tab">
-        <section class="panel">
+        <section v-if="isSuperAdmin" class="panel">
           <h3>运行开关</h3>
           <label class="setting-row"><span>提报前知识库推荐</span><input v-model="settings.kbRecommendEnabled" type="checkbox" role="switch" /></label>
-          <BadgeTitleSetting v-if="isSuperAdmin" />
+          <BadgeTitleSetting />
           <div class="setting-row"><span>登录方式</span><b>{{ auth.config?.demoEnabled ? '演示登录' : '钉钉免登' }}</b></div>
           <p class="hint">钉钉接入凭据与登录方式由部署配置控制。页面中的修改保存后生效。</p>
         </section>
-        <section class="panel">
+        <section v-if="isSuperAdmin" class="panel">
           <h3>基础参数</h3>
           <label class="field">二维码访问基址<input v-model="settings.qrcodeBaseUrl" class="inp" type="url" maxlength="255" /></label>
           <label class="field">统计缓存（秒，0 为关闭）<input v-model.number="settings.statsCacheSeconds" class="inp" type="number" min="0" max="300" /></label>
@@ -399,24 +433,31 @@ watch(tab, () => { dialog.value = ''; void loadSection() })
       </section>
 
       <section v-else-if="tab === 'users'" class="panel">
-        <div class="section-head"><h3>用户与角色</h3><span class="muted">共 {{ userTotal }} 人</span></div>
-        <form class="toolbar" @submit.prevent="userPage = 1; loadSection()">
-          <input v-model="keyword" class="inp" placeholder="姓名、拼音、首字母、部门或工号" aria-label="搜索用户" />
+        <div class="section-head">
+          <h3>用户与角色</h3>
+          <span v-if="!userLoadError" class="muted" role="status">{{ usersLoading ? '正在查询…' : `共 ${userTotal} 人` }}</span>
+        </div>
+        <div class="toolbar" role="search" aria-label="筛选用户">
+          <input v-model="keyword" class="inp" type="search" autocomplete="off" placeholder="姓名、拼音、首字母、部门或工号" aria-label="搜索用户" />
           <select v-model="status" class="sel" aria-label="用户状态"><option value="">全部状态</option><option value="ACTIVE">在职</option><option value="DISABLED">停用</option></select>
-          <button class="btn" type="submit">查询</button>
-        </form>
+        </div>
         <p class="hint">人员由钉钉通讯录同步。停用或移除处理权限时，有未结工单的用户必须指定交接人；角色为单选，修改立即作用于后续请求。</p>
-        <div class="table-wrap"><table class="tb">
+        <div v-if="userLoadError" class="error" role="alert">{{ userLoadError }}</div>
+        <div class="table-wrap" :aria-busy="usersLoading"><table class="tb">
           <thead><tr><th>姓名 / 工号</th><th>部门</th><th>角色</th><th>状态</th><th>操作</th></tr></thead>
           <tbody><tr v-for="u in users" :key="u.id">
             <td><b>{{ u.name }}</b><div class="muted small">{{ u.employeeNo || '—' }}</div></td>
             <td>{{ u.deptName || '未分配' }}</td>
             <td>{{ roleNames[u.role] || u.role }}</td>
             <td>{{ u.status === 'ACTIVE' ? '在职' : '停用' }}</td>
-            <td><button v-if="u.role !== 'SUPER_ADMIN' || isSuperAdmin" class="btn sm" @click="openEditor('user', u)">编辑</button></td>
-          </tr><tr v-if="!users.length"><td colspan="5" class="empty">没有匹配的用户</td></tr></tbody>
+            <td><button v-if="u.role !== 'SUPER_ADMIN' || isSuperAdmin" class="btn sm" :disabled="usersLoading" @click="openEditor('user', u)">编辑</button></td>
+          </tr><tr v-if="!users.length && !usersLoading && !userLoadError"><td colspan="5" class="empty">没有匹配的用户</td></tr></tbody>
         </table></div>
-        <div class="pagination"><button class="btn sm" :disabled="userPage <= 1" @click="userPage--; loadSection()">上一页</button><span>第 {{ userPage }} 页</span><button class="btn sm" :disabled="userPage * 20 >= userTotal" @click="userPage++; loadSection()">下一页</button></div>
+        <div class="pagination">
+          <button class="btn sm" :disabled="usersLoading || !!userLoadError || userPage <= 1" @click="loadUsers(userPage - 1)">上一页</button>
+          <span>第 {{ userPage }} 页</span>
+          <button class="btn sm" :disabled="usersLoading || userPage * 20 >= userTotal" @click="loadUsers(userPage + 1)">下一页</button>
+        </div>
       </section>
 
       <template v-else-if="tab === 'depts'">

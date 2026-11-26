@@ -408,7 +408,7 @@ async function main() {
     console.log('  普通浏览器不会提供演示身份切换。')
   } else {
     console.log('  本地演示：在右上角「我的账户」切换身份。')
-    console.log('  谈帥宏、刘宇泽（普通用户），林凤新（IT），邵昕炜（超级管理员）。')
+    console.log('  谈帥宏、刘宇泽、朱思宇（普通用户），林凤新（IT），邵昕炜（超级管理员）。')
   }
   console.log('')
   console.log('  按 Ctrl+C 停止所有服务。')

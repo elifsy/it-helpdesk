@@ -6,7 +6,7 @@ import java.util.List;
 public record LoginUser(Long id, String name, String role, String deptName, List<String> permissions) {
     public LoginUser {
         role=Roles.normalize(role);
-        permissions=permissions==null ? List.of() : List.copyOf(permissions);
+        permissions=permissions==null ? List.of() : List.copyOf(Permissions.allowedForRole(role, permissions));
     }
     public LoginUser(Long id,String name,String role,String deptName) {
         this(id,name,role,deptName,Permissions.defaults(Roles.normalize(role)));

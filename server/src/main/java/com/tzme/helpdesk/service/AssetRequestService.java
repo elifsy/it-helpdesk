@@ -4,6 +4,8 @@ import com.tzme.helpdesk.common.BizException;
 import com.tzme.helpdesk.common.CurrentUser;
 import com.tzme.helpdesk.domain.Asset;
 import com.tzme.helpdesk.domain.AssetRequest;
+import com.tzme.helpdesk.domain.MissingReport;
+import com.tzme.helpdesk.domain.User;
 import com.tzme.helpdesk.dto.ApproveReq;
 import com.tzme.helpdesk.dto.AssetRequestCreateReq;
 import com.tzme.helpdesk.mapper.AssetMapper;
@@ -43,27 +45,34 @@ public class AssetRequestService {
     public List<AssetRequest> list(String status, Boolean mine, String type, String no) {
         LoginUser u = CurrentUser.require();
         boolean mineFlag = Boolean.TRUE.equals(mine) || u.isEmployeeOnly();
-        var rows = requestMapper.list(status, mineFlag ? u.name() : null, mineFlag ? u.id() : null, type, no);
-        if (!com.tzme.helpdesk.security.Roles.isItOrAdmin(u.role())) rows.forEach(row -> row.setPendingReportCount(null));
-        return rows;
+        return requestMapper.list(status, mineFlag ? u.name() : null, mineFlag ? u.id() : null, type, no,
+                MissingReportGuard.staffCountDate(u));
     }
 
     @Transactional
     public AssetRequest create(AssetRequestCreateReq req) {
         LoginUser u = CurrentUser.require();
-        missingReports.requireCanSubmit(u.id());
-        String type = req.getType() == null ? "" : req.getType().toUpperCase();
+        String type = req.getType() == null ? "" : req.getType().toUpperCase(java.util.Locale.ROOT);
         if (!TYPES.contains(type)) {
             throw new BizException("不支持的申请类型");
         }
+        boolean returning = "RETURN".equals(type);
+        missingReports.lockRequester(u.id());
+        if (!returning) missingReports.requireWithinLimit(u.id());
         Asset a = assetMapper.findByNoForUpdate(req.getAssetNo());
         if (a == null) throw new BizException(404, "资产不存在");
+        if (returning) {
+            if (!BorrowDueService.isOverdue(a, u.id(), BorrowDueService.today())) missingReports.requireWithinLimit(u.id());
+            if (missingReports.hasPendingReturn(u.id(), a.getNo())) {
+                throw new BizException(409, "该设备已有待补交的归还申请，请在「我的待补交事项」办理");
+            }
+        }
         if(req.getCategory()!=null && !req.getCategory().equals(a.getCategory())) throw new BizException(409,"设备分类已变化，请重新选择设备");
         assetService.assertAllowed(a, type, u.id());
         assertNotReserved(a.getNo());
 
         // 同一人对同一设备只允许一条待审批申请，避免重复提交
-        AssetRequest pending = requestMapper.findPendingByApplicantAndAsset(u.name(), req.getAssetNo());
+        AssetRequest pending = requestMapper.findPendingByApplicantAndAsset(u.id(), req.getAssetNo());
         if (pending != null)
             throw new BizException(409, "该设备已有一条待审批的「" + TYPE_NAME.getOrDefault(pending.getType(), pending.getType())
                     + "」申请 " + pending.getNo() + "，请等待审批结果，勿重复提交。");
@@ -115,6 +124,53 @@ public class AssetRequestService {
                     r.getNo() + " " + TYPE_NAME.get(type) + " 已提交，等待审批。", "ASSET", r.getNo());
         }
         return requestMapper.findById(r.getId());
+    }
+
+    static boolean supportsType(String type) {
+        return type != null && TYPES.contains(type);
+    }
+
+    void validateSupplement(MissingReport report, User requester) {
+        lockSupplementAssets(supplementRequest(report, requester));
+    }
+
+    AssetRequest archiveSupplement(MissingReport report, User requester, String reason) {
+        AssetRequest r = supplementRequest(report, requester);
+        var locked = lockSupplementAssets(r);
+        r.setNo(noGen.next("AS"));
+        r.setReason(reason);
+        requestMapper.insert(r);
+
+        String operator = report.getRecordedBy();
+        applyStage(r, locked.get(r.getAssetNo()), locked.get(r.getNewAssetNo()), operator);
+        String remark = r.getRemark();
+        r.setRemark("线下已办理，员工补交" + (remark == null ? "" : "；" + remark));
+        r.setHandoverBy(operator);
+        r.setHandoverAt(report.getCompletedAt());
+        complete(r, operator, null);
+        return requestMapper.findById(r.getId());
+    }
+
+    private static AssetRequest supplementRequest(MissingReport report, User requester) {
+        AssetRequest r = new AssetRequest();
+        r.setType(report.getBusinessType());
+        r.setAssetNo(report.getAssetNo());
+        r.setNewAssetNo(report.getNewAssetNo());
+        r.setExpectReturn(report.getExpectReturn());
+        r.setApplicant(requester.getName());
+        r.setApplicantId(requester.getId());
+        r.setDept(requester.getDeptName());
+        return r;
+    }
+
+    private Map<String, Asset> lockSupplementAssets(AssetRequest r) {
+        var locked = lockAssets(r, r.getNewAssetNo());
+        assetService.assertAllowed(locked.get(r.getAssetNo()), r.getType(), r.getApplicantId());
+        if (r.getNewAssetNo() != null) checkNewAsset(r, locked.get(r.getNewAssetNo()), null);
+        if (requestMapper.countSupplementConflicts(r.getApplicantId(), r.getAssetNo(), r.getNewAssetNo()) > 0) {
+            throw new BizException(409, "相关设备已有待审批或待交接的申请，请先处理原申请");
+        }
+        return locked;
     }
 
     @Transactional
@@ -282,8 +338,11 @@ public class AssetRequestService {
     private void checkNewAsset(AssetRequest r, Asset na, ApproveReq req) {
         if (req != null && req.getNewAssetCategory() != null && !req.getNewAssetCategory().equals(na.getCategory()))
             throw new BizException(409, "替换设备分类已变化，请重新选择");
-        boolean idle = "闲置".equals(na.getStatus()) && !na.hasUser() && !na.hasBorrower();
-        if (!idle) throw new BizException("替换设备必须处于闲置状态");
+        if (!availableReplacement(na)) throw new BizException("替换设备必须处于闲置状态");
+    }
+
+    static boolean availableReplacement(Asset asset) {
+        return "闲置".equals(asset.getStatus()) && !asset.hasUser() && !asset.hasBorrower();
     }
 
     /** 按业务执行对应动作；REPLACE 由回收 + 配发两步组成 */

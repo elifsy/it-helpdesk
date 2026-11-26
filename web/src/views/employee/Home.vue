@@ -12,6 +12,7 @@ import { ticketQueueText } from '../../utils/ticketQueue'
 import { assetOperationPath } from '../../utils/asset-links'
 import AssetRequestFlow from '../../components/AssetRequestFlow.vue'
 import PurchaseFlow from '../../components/PurchaseFlow.vue'
+import PendingReportBadges from '../../components/PendingReportBadges.vue'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -76,7 +77,10 @@ function openPurchase() {
 }
 
 function openQuick(type: string) {
-  if (reportState.summary?.blocked) { void router.push('/missing-reports'); return }
+  if (reportState.summary?.blocked) {
+    void router.push(type === 'RETURN' ? '/assets?tab=overdue' : '/missing-reports')
+    return
+  }
   if (!auth.can('request.create')) return
   flow.value?.open(type)
 }
@@ -120,17 +124,18 @@ async function doScan() {
     <div class="col-main">
       <div class="home-heading" :class="{ 'has-reminder': pendingReports }">
         <div class="greet">
-          <div class="eyebrow">内部 IT 服务台 · {{ auth.user?.deptName }}</div>
+          <!-- <div class="eyebrow">内部 IT 服务台 · {{ auth.user?.deptName }}</div> -->
           <div class="hi">你好，{{ auth.user?.name }}。</div>
           <div class="sub">你有 {{ active.length }} 张工单处理中</div>
         </div>
 
-        <section v-if="pendingReports" class="report-reminder" aria-label="已完成事项待补报">
+        <section v-if="pendingReports" class="report-reminder" aria-label="待处理事项">
           <div class="report-reminder-copy">
-            <b>{{ pendingReports }} 条已完成事项待补报</b>
-            <p>{{ reportState.summary?.blocked ? '请先补报，报修与资产服务已暂停。' : '请补交通过消息或电话临时处理的事项。' }}</p>
+            <b>{{ pendingReports }} 项待处理</b>
+            <PendingReportBadges :counts="reportState.summary?.pendingByType" />
+            <p>{{ reportState.summary?.blocked ? '请先补交事项或归还逾期设备，处理后可恢复新申请。' : '待补交事项和逾期设备共用同一额度。' }}</p>
           </div>
-          <router-link class="btn sm pri report-reminder-link" to="/missing-reports">查看并补报</router-link>
+          <router-link class="btn sm pri report-reminder-link" to="/missing-reports">查看待处理事项</router-link>
         </section>
       </div>
 
@@ -157,7 +162,7 @@ async function doScan() {
           <div class="ic">＋</div>
           <div class="lt">
             <div class="l">报修</div>
-            <span v-if="pendingReports" class="pill b-orange">{{ pendingReports }} 条待补报</span>
+            <PendingReportBadges :counts="reportState.summary?.pendingByType" />
             <div class="ldesc">描述故障位置和现象，系统自动定级并开始计时</div>
           </div>
           <span class="arrow">›</span>
@@ -184,7 +189,7 @@ async function doScan() {
           <div class="qi">{{ REQ_TYPE[q.type].icon }}</div>
           <div class="sp">
             <div class="qt">{{ q.label }}</div>
-          <span v-if="pendingReports" class="pill b-orange">{{ pendingReports }} 条待补报</span>
+            <span v-if="pendingReports" class="pill b-orange">{{ pendingReports }} 项待处理</span>
             <div class="qm" :title="q.count ? `可选 ${q.count} 台设备` : '暂无可选设备'">{{ q.count ? `可选 ${q.count} 台` : '暂无可选' }}</div>
           </div>
           <span style="color: var(--t4)">›</span>
@@ -193,7 +198,7 @@ async function doScan() {
           <div class="qi">⊕</div>
           <div class="sp">
             <div class="qt">购入申请</div>
-          <span v-if="pendingReports" class="pill b-orange">{{ pendingReports }} 条待补报</span>
+            <span v-if="pendingReports" class="pill b-orange">{{ pendingReports }} 项待处理</span>
             <div class="qm">没有合适的设备可领？申请采购一台新的</div>
           </div>
           <span style="color: var(--t4)">›</span>

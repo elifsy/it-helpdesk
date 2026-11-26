@@ -141,7 +141,6 @@ onBeforeUnmount(() => {
       <div class="kpi"><div class="n">{{ ov.total || 0 }}</div><div class="l">工单总量</div></div>
       <div class="kpi"><div class="n" style="color: var(--brand)">{{ ov.slaRate || 0 }}%</div><div class="l">解决达成率</div></div>
       <div class="kpi"><div class="n">{{ ov.responseCount ? ov.avgResponseMinutes + ' 分' : '—' }}</div><div class="l">平均首次响应</div></div>
-      <div class="kpi"><div class="n" style="color: var(--brand)">{{ ov.responseSlaTotal ? ov.responseSlaRate + '%' : '—' }}</div><div class="l">首次响应达成率</div></div>
       <div class="kpi"><div class="n" style="color: var(--green)">{{ ov.avgHours || 0 }}h</div><div class="l">平均解决时长</div></div>
       <div class="kpi"><div class="n" style="color: var(--orange)">{{ ov.avgRating || '—' }}</div><div class="l">满意度（{{ ov.ratedCount || 0 }} 条）</div></div>
     </div>

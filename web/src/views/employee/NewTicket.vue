@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { assetApi, attachmentApi, kbApi, metaApi, ticketApi } from '../../api'
 import { toast } from '../../utils/toast'
@@ -9,6 +9,7 @@ import { statusName } from '../../utils/dict'
 import { TICKET_TYPES, type TicketCategoriesByType } from '../../config/ticket-types'
 import { useAuthStore } from '../../stores/auth'
 import AssetPicker from '../../components/AssetPicker.vue'
+import AttachmentFolder from '../../components/AttachmentFolder.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -35,11 +36,10 @@ const resolvedKbIds = new Set<number>()
 const submitting = ref(false)
 const triedKb = ref(0)
 const kbHitIds = ref<number[]>([])
-const files = ref<File[]>([])
-const previews = ref<string[]>([])
+const files = shallowRef<File[]>([])
 const runtime = ref({ maxAttachments: 3, maxUploadMb: 5, kbRecommendEnabled: true, requireSolutionCode: true })
 let active = true
-onUnmounted(() => { active = false; previews.value.forEach(URL.revokeObjectURL) })
+onUnmounted(() => { active = false })
 
 const form = reactive({
   title: '',
@@ -232,30 +232,6 @@ async function submit() {
     submitting.value = false
   }
 }
-
-
-function onPickFiles(e: Event) {
-  const input = e.target as HTMLInputElement
-  for (const f of Array.from(input.files || [])) {
-    if (files.value.length >= runtime.value.maxAttachments) {
-      toast(`最多上传 ${runtime.value.maxAttachments} 个附件`)
-      break
-    }
-    if (f.size > runtime.value.maxUploadMb * 1024 * 1024) {
-      toast(`${f.name} 超过 ${runtime.value.maxUploadMb}MB`)
-      continue
-    }
-    files.value.push(f)
-    previews.value.push(URL.createObjectURL(f))
-  }
-  input.value = ''
-}
-
-function removeFile(i: number) {
-  URL.revokeObjectURL(previews.value[i])
-  files.value.splice(i, 1)
-  previews.value.splice(i, 1)
-}
 </script>
 
 <template>
@@ -382,16 +358,8 @@ function removeFile(i: number) {
 
       <div class="fld" style="margin-bottom: 4px">
         <label class="lb">现场截图 <small class="muted">（选填，最多 {{ runtime.maxAttachments }} 个，单个 ≤{{ runtime.maxUploadMb }}MB）</small></label>
-        <div class="thumbs" data-workflow-step="repair-attachment">
-          <div v-for="(src, i) in previews" :key="i" class="thumb">
-            <img :src="src" alt="" />
-            <span class="del" @click="removeFile(i)">×</span>
-          </div>
-          <label v-if="files.length < runtime.maxAttachments" class="picker">
-            ＋
-            <input type="file" accept="image/*,application/pdf" multiple hidden @change="onPickFiles" />
-          </label>
-        </div>
+        <AttachmentFolder v-model="files" data-workflow-step="repair-attachment" :disabled="submitting"
+          :max-files="runtime.maxAttachments" :max-file-mb="runtime.maxUploadMb" />
         <div class="small muted" style="margin-top: 6px">拍照或截图能省一轮来回沟通，工程师一眼就能判断</div>
       </div>
     </div>
@@ -490,12 +458,14 @@ function removeFile(i: number) {
 .asset-pick-head p { margin:6px 0 0; color:var(--t3); font-size:11.5px; }
 .asset-pick-close { border:0; border-radius:8px; background:transparent; color:var(--t3); font-size:26px; width:32px; height:32px; cursor:pointer; flex:0 0 auto; }
 .asset-pick-close:hover { color:var(--t1); background:#f2f4f7; }
-.asset-pick-body { min-height:0; overflow:auto; }
+.asset-pick-body { display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+.asset-pick-body > .asset-picker { min-height:0; }
 .asset-pick-foot { flex-shrink:0; align-items:center; justify-content:space-between; gap:14px; padding:14px 22px 18px; border-top:1px solid var(--line2); }
-.asset-pick-actions { display:flex; gap:9px; }
+.asset-pick-actions { display:flex; flex-shrink:0; gap:9px; }
+.asset-pick-foot > span { min-width:0; overflow-wrap:anywhere; }
 @media (max-width:600px) {
   .asset-pick-mask { padding:10px; }
-  .asset-pick-dialog { max-height:94dvh; }
+  .asset-pick-dialog { max-height:calc(100vh - 20px); max-height:calc(100dvh - 20px); }
   .asset-pick-head { padding:14px; }
   .asset-pick-head h3 { font-size:14px; }
   .asset-pick-head p { font-size:10.5px; }
@@ -512,56 +482,6 @@ function removeFile(i: number) {
 }
 .kbi:last-child {
   border-bottom: none;
-}
-.thumbs {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.thumb {
-  position: relative;
-  width: 72px;
-  height: 72px;
-  border-radius: 8px;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  background: #fafbfc;
-}
-.thumb img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-.thumb .del {
-  position: absolute;
-  right: 2px;
-  top: 2px;
-  width: 17px;
-  height: 17px;
-  line-height: 15px;
-  text-align: center;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.55);
-  color: #fff;
-  font-size: 12px;
-  cursor: pointer;
-}
-.picker {
-  width: 72px;
-  height: 72px;
-  border: 1px dashed var(--t4);
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--t3);
-  cursor: pointer;
-  font-size: 20px;
-}
-.picker:hover {
-  border-color: var(--brand);
-  color: var(--brand);
 }
 @media (min-width: 900px) {
   .new-ticket {

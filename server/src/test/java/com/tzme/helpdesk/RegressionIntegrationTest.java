@@ -26,6 +26,7 @@ import org.springframework.test.context.jdbc.SqlConfig;
 import org.springframework.test.web.servlet.*;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.util.*;
@@ -68,6 +69,11 @@ class RegressionIntegrationTest {
         return body(mvc.perform(multipart("/attachments").file(file()).param("bizType","TICKET").param("bizNo","IT-TEST-0001").header("Authorization","Bearer "+token)));
     }
     JsonNode settings(String token) throws Exception { return body(mvc.perform(get("/admin/manage/settings").header("Authorization","Bearer "+token))); }
+
+    private String loginSuperAdmin() throws Exception {
+        db.update("update sys_user set role='SUPER_ADMIN' where id=5");
+        return login("王敏");
+    }
 
     @Test void onlySuperAdminsCanChangeBadgeTitlesAndManageOtherSuperAdmins() throws Exception {
         String admin = login("陈静"), it = login("李强"), employee = login("张伟"), superAdmin = login("王敏");
@@ -195,15 +201,152 @@ class RegressionIntegrationTest {
         assertEquals("CANCELLED", body(mvc.perform(get(root+"/"+reports.get(1)).header("Authorization","Bearer "+it))).path("report").path("status").asText());
     }
 
+    @Test void assetSupplementsShareTheRepairLimitAndAppearOnStaffOrders() throws Exception {
+        String owner = login("张伟"), it = login("李强"), other = login("普通用户乙");
+        String root = "/missing-reports";
+        String device = "ASSET-TEST-2";
+        for (int i = 0; i < 3; i++) body(mvc.perform(registerMissingReport(it, evidence())));
+        var fields = Map.<String, Object>of("businessType", "RECEIVE", "assetNo", device);
+        mvc.perform(registerMissingReport(owner, fields, evidence())).andExpect(status().isForbidden());
+        String report = body(mvc.perform(registerMissingReport(it, fields, evidence()))).path("no").asText();
+
+        mvc.perform(registerMissingReport(it, fields, evidence())).andExpect(status().isConflict());
+        mvc.perform(get(root + "/asset-options").param("requesterId", "1").param("type", "RECEIVE")
+                .header("Authorization", "Bearer " + other)).andExpect(status().isForbidden());
+        mvc.perform(get(root + "/" + report).header("Authorization", "Bearer " + other)).andExpect(status().isForbidden());
+        assertEquals(device, body(mvc.perform(get(root + "/" + report).header("Authorization", "Bearer " + owner)))
+                .path("asset").path("no").asText());
+        assertEquals("闲置", db.queryForObject("select status from it_asset where no=?", String.class, device));
+        JsonNode summary = body(mvc.perform(get(root + "/summary").header("Authorization", "Bearer " + owner)));
+        assertEquals(4, summary.path("pending").asInt());
+        assertTrue(summary.path("blocked").asBoolean());
+        assertEquals(3, summary.path("pendingByType").path("repair").asInt());
+        assertEquals(1, summary.path("pendingByType").path("receive").asInt());
+
+        JsonNode ticket = body(mvc.perform(get("/tickets").header("Authorization", "Bearer " + it))).path("list").get(0);
+        assertEquals(3, ticket.path("pendingReportCount").asInt());
+        assertEquals(1, ticket.path("pendingByType").path("receive").asInt());
+        assertFalse(body(mvc.perform(get("/tickets").header("Authorization", "Bearer " + owner)))
+                .path("list").get(0).hasNonNull("pendingByType"));
+        JsonNode request = body(mvc.perform(get("/asset-requests").param("no", "AS-TEST-1")
+                .header("Authorization", "Bearer " + it))).get(0);
+        assertEquals(1, request.path("pendingByType").path("receive").asInt());
+        db.update("insert into it_purchase_request(no,item_name,applicant,applicant_id,reason) values(?,?,?,?,?)",
+                "PR-SUPPLEMENT-TEST", "测试设备", "张伟", 1L, "用于测试补交标签");
+        try {
+            assertEquals(1, body(mvc.perform(get("/purchase-requests").param("no", "PR-SUPPLEMENT-TEST")
+                    .header("Authorization", "Bearer " + it))).get(0).path("pendingByType").path("receive").asInt());
+        } finally {
+            db.update("delete from it_purchase_request where no='PR-SUPPLEMENT-TEST'");
+        }
+
+        mvc.perform(post("/asset-requests").header("Authorization", "Bearer " + owner).contentType("application/json")
+                .content("{\"type\":\"RECEIVE\",\"assetNo\":\"ASSET-TEST-2\",\"reason\":\"测试限制\"}"))
+                .andExpect(status().isConflict());
+        submitAssetSupplement(report, other).andExpect(status().isForbidden());
+        JsonNode completed = body(submitAssetSupplement(report, owner));
+        assertEquals("COMPLETED", completed.path("status").asText());
+        assertEquals("李强", completed.path("approver").asText());
+        assertEquals("在用", db.queryForObject("select status from it_asset where no=?", String.class, device));
+        assertEquals(1L, db.queryForObject("select user_id from it_asset where no=?", Long.class, device));
+        assertEquals(completed.path("no"), body(submitAssetSupplement(report, owner)).path("no"));
+        assertEquals(1, db.queryForObject("select count(*) from it_asset_history where asset_no=?", Integer.class, device));
+        assertFalse(body(mvc.perform(get(root + "/summary").header("Authorization", "Bearer " + owner))).path("blocked").asBoolean());
+        assertEquals(0, body(mvc.perform(get("/tickets").header("Authorization", "Bearer " + it)))
+                .path("list").get(0).path("pendingByType").path("receive").asInt());
+    }
+
+    @Test void borrowReturnAndReplacementSupplementsApplyTheExistingAssetTransitions() throws Exception {
+        String owner = login("张伟"), it = login("李强");
+        String old = "ASSET-TEST-1", spare = "ASSET-TEST-2";
+        db.update("delete from it_asset_request");
+
+        LocalDate due = LocalDate.now().plusWeeks(1);
+        String borrow = body(mvc.perform(registerMissingReport(it,
+                Map.of("businessType", "BORROW", "assetNo", old, "expectReturn", due), evidence()))).path("no").asText();
+        assertEquals("COMPLETED", body(submitAssetSupplement(borrow, owner)).path("status").asText());
+        assertEquals("借出中", db.queryForObject("select status from it_asset where no=?", String.class, old));
+        assertEquals(1L, db.queryForObject("select borrower_id from it_asset where no=?", Long.class, old));
+        assertEquals(due, db.queryForObject("select borrow_due from it_asset where no=?", LocalDate.class, old));
+
+        String ret = body(mvc.perform(registerMissingReport(it,
+                Map.of("businessType", "RETURN", "assetNo", old), evidence()))).path("no").asText();
+        assertEquals("COMPLETED", body(submitAssetSupplement(ret, owner)).path("status").asText());
+        assertEquals("闲置", db.queryForObject("select status from it_asset where no=?", String.class, old));
+        assertNull(db.queryForObject("select borrower_id from it_asset where no=?", Long.class, old));
+        assertNull(db.queryForObject("select borrow_due from it_asset where no=?", LocalDate.class, old));
+
+        db.update("update it_asset set status='在用',user_id=1,user_name='张伟' where no=?", old);
+        db.update("update it_ticket set asset_no=? where no='IT-TEST-0001'", old);
+        String swap = body(mvc.perform(registerMissingReport(it,
+                Map.of("businessType", "REPLACE", "assetNo", old, "newAssetNo", spare), evidence()))).path("no").asText();
+        db.update("update it_asset set status='维修中' where no=?", spare);
+        submitAssetSupplement(swap, owner).andExpect(status().isBadRequest());
+        assertEquals("PENDING", db.queryForObject("select status from it_missing_report where no=?", String.class, swap));
+        assertEquals("在用", db.queryForObject("select status from it_asset where no=?", String.class, old));
+        db.update("update it_asset set status='闲置' where no=?", spare);
+        JsonNode replaced = body(submitAssetSupplement(swap, owner));
+        assertEquals("COMPLETED", replaced.path("status").asText());
+        assertEquals(spare, replaced.path("newAssetNo").asText());
+        assertEquals("闲置", db.queryForObject("select status from it_asset where no=?", String.class, old));
+        assertNull(db.queryForObject("select user_id from it_asset where no=?", Long.class, old));
+        assertEquals("在用", db.queryForObject("select status from it_asset where no=?", String.class, spare));
+        assertEquals(1L, db.queryForObject("select user_id from it_asset where no=?", Long.class, spare));
+        assertEquals(spare, db.queryForObject("select asset_no from it_ticket where no='IT-TEST-0001'", String.class));
+        assertEquals(replaced.path("no").asText(),
+                db.queryForObject("select asset_request_no from it_missing_report where no=?", String.class, swap));
+    }
+
+    private ResultActions submitAssetSupplement(String no, String token) throws Exception {
+        return mvc.perform(post("/missing-reports/" + no + "/submit-asset")
+                .header("Authorization", "Bearer " + token).contentType("application/json")
+                .content("{\"reason\":\"补交线下办理申请\"}"));
+    }
+
+    @Test void registersMultipleEvidenceFilesTogetherAndRollsBackAnInvalidBatch() throws Exception {
+        String owner = login("张伟"), it = login("李强"), other = login("普通用户乙");
+        var audio = new MockMultipartFile("evidence", "call.wav", "audio/wav", new byte[]{1, 2, 3});
+        var invalid = new MockMultipartFile("evidence", "evidence.exe", "application/octet-stream", new byte[]{1});
+        mvc.perform(registerMissingReport(it)).andExpect(status().isBadRequest());
+        mvc.perform(registerMissingReport(it, evidence(), invalid)).andExpect(status().isBadRequest());
+        mvc.perform(registerMissingReport(it, evidence(), audio, evidence(), audio)).andExpect(status().isBadRequest());
+        assertEquals(0, db.queryForObject("select count(*) from it_missing_report", Integer.class));
+        assertEquals(0, db.queryForObject("select count(*) from it_attachment", Integer.class));
+        try (var paths = Files.walk(uploads)) {
+            assertFalse(paths.anyMatch(Files::isRegularFile));
+        }
+
+        String no = body(mvc.perform(registerMissingReport(it, evidence(), audio))).path("no").asText();
+        JsonNode attachments = body(mvc.perform(get("/missing-reports/" + no).header("Authorization", "Bearer " + owner)))
+                .path("evidence");
+        var fileNames = new HashSet<String>();
+        for (JsonNode attachment : attachments) {
+            fileNames.add(attachment.path("fileName").asText());
+            String url = "/attachments/raw/" + attachment.path("storedName").asText();
+            mvc.perform(get(url).header("Authorization", "Bearer " + owner)).andExpect(status().isOk());
+            mvc.perform(get(url).header("Authorization", "Bearer " + other)).andExpect(status().isForbidden());
+        }
+        assertEquals(2, attachments.size());
+        assertEquals(Set.of("evidence.png", "call.wav"), fileNames);
+    }
+
     private MockMultipartFile evidence() {
         return new MockMultipartFile("evidence","evidence.png","image/png",new byte[]{(byte)137,80,78,71});
     }
 
-    private org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder registerMissingReport(String token, MockMultipartFile evidence) throws Exception {
-        var registration = new MockMultipartFile("report","report.json","application/json",
-                json.writeValueAsBytes(Map.of("requesterId",1,"title","紧急处理","description","已根据电话沟通处理完成",
-                        "channel","PHONE","completedAt",java.time.LocalDateTime.now().minusMinutes(10))));
-        var request = multipart("/missing-reports").file(registration).file(evidence);
+    private org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder registerMissingReport(String token, MockMultipartFile... evidence) throws Exception {
+        return registerMissingReport(token, Map.of(), evidence);
+    }
+
+    private org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder registerMissingReport(
+            String token, Map<String, Object> fields, MockMultipartFile... evidence) throws Exception {
+        var input = new HashMap<String, Object>(Map.of("requesterId", 1, "title", "紧急处理",
+                "description", "已根据电话沟通处理完成", "channel", "PHONE",
+                "completedAt", java.time.LocalDateTime.now().minusMinutes(10)));
+        input.putAll(fields);
+        var registration = new MockMultipartFile("report", "report.json", "application/json", json.writeValueAsBytes(input));
+        var request = multipart("/missing-reports").file(registration);
+        for (MockMultipartFile file : evidence) request.file(file);
         request.header("Authorization","Bearer "+token);
         return request;
     }
@@ -977,7 +1120,7 @@ class RegressionIntegrationTest {
     }
 
     @Test void settingsPersistValidateRevisionAndChangeTicketSla() throws Exception {
-        String admin=login("陈静"), employee=login("张伟");
+        String admin=loginSuperAdmin(), employee=login("张伟");
         ObjectNode s=(ObjectNode) settings(admin); s.put("p1Hours",2); s.put("maxAttachments",1);
         JsonNode saved=body(mvc.perform(put("/admin/manage/settings").contentType("application/json").content(s.toString()).header("Authorization","Bearer "+admin)));
         assertEquals(1,saved.get("revision").asLong());
@@ -994,6 +1137,63 @@ class RegressionIntegrationTest {
         assertEquals(3600, clock.between(savedTicket.getCreatedAt(), savedTicket.getResponseDueAt()));
         upload(employee);
         mvc.perform(multipart("/attachments").file(file()).param("bizType","TICKET").param("bizNo","IT-TEST-0001").header("Authorization","Bearer "+employee)).andExpect(status().isBadRequest());
+    }
+
+    @Test void restrictedConfigurationIsSuperAdminOnlyAndDelegatedWritesPreserveIt() throws Exception {
+        String admin = login("陈静"), superAdmin = loginSuperAdmin();
+        String url = "/admin/manage/settings";
+        String productionStyleSettings = """
+                {"revision":4,"p1Hours":3,"kbRecommendEnabled":false,"requireSolutionCode":false,
+                 "qrcodeBaseUrl":"https://helpdesk.example.test","statsCacheSeconds":20,"maxUploadMb":8,"maxAttachments":5}
+                """;
+        db.update("insert into sys_setting(setting_key,setting_value) values('runtime',?)", productionStyleSettings);
+        var protectedFields = List.of("p1Hours", "p2Hours", "p3Hours", "p4Hours", "slaCalendar", "kbRecommendEnabled",
+                "requireSolutionCode", "qrcodeBaseUrl", "statsCacheSeconds", "maxUploadMb", "maxAttachments");
+        JsonNode adminSettings = settings(admin);
+        JsonNode superSettings = settings(superAdmin);
+        protectedFields.forEach(field -> {
+            assertFalse(adminSettings.has(field), field);
+            assertTrue(superSettings.hasNonNull(field), field);
+        });
+        assertTrue(adminSettings.hasNonNull("handoverCategories"));
+        assertTrue(adminSettings.hasNonNull("duty"));
+        assertTrue(adminSettings.hasNonNull("approvalEnabled"));
+
+        String update = """
+                {"revision":4,"handoverCategories":{"BORROW":["终端"]},"approvalEnabled":true}
+                """;
+        JsonNode saved = body(mvc.perform(put(url).header("Authorization", "Bearer " + admin)
+                .contentType("application/json").content(update)));
+        assertEquals(5, saved.path("revision").asInt());
+        assertTrue(saved.path("approvalEnabled").asBoolean());
+        assertEquals("终端", saved.path("handoverCategories").path("BORROW").get(0).asText());
+        for (String field : protectedFields) {
+            assertFalse(saved.has(field), field);
+            assertEquals(superSettings.path(field), settings(superAdmin).path(field), field);
+        }
+        mvc.perform(put(url).header("Authorization", "Bearer " + admin).contentType("application/json")
+                .content("{\"revision\":5,\"handoverCategories\":{},\"statsCacheSeconds\":0}"))
+                .andExpect(status().isForbidden());
+        assertEquals(saved, settings(admin));
+
+        String matrix = "/admin/manage/permissions";
+        var old = body(mvc.perform(get(matrix).header("Authorization", "Bearer " + admin)));
+        assertFalse(old.path("capabilities").toString().contains("audit.view"));
+        var assignments = (ObjectNode) old.path("assignments").deepCopy();
+        ((ArrayNode) assignments.get("ADMIN")).add("audit.view");
+        ObjectNode legacy = json.createObjectNode().put("revision", 0).put("selfServiceVersion", 1);
+        legacy.set("assignments", assignments);
+        db.update("insert into sys_setting(setting_key,setting_value) values('role-permissions',?)", legacy.toString());
+        assertFalse(body(mvc.perform(get("/auth/me").header("Authorization", "Bearer " + admin)))
+                .path("permissions").toString().contains("audit.view"));
+        mvc.perform(put(matrix).header("Authorization", "Bearer " + admin).contentType("application/json")
+                .content(legacy.toString())).andExpect(status().isBadRequest());
+        for (String route : List.of("/admin/manage/audit", "/admin/manage/storage")) {
+            mvc.perform(get(route).header("Authorization", "Bearer " + admin)).andExpect(status().isForbidden());
+            mvc.perform(get(route).header("Authorization", "Bearer " + superAdmin)).andExpect(status().isOk());
+        }
+        assertEquals(5, body(mvc.perform(get("/meta/runtime").header("Authorization", "Bearer " + admin)))
+                .path("maxAttachments").asInt());
     }
 
     @Test void onlySuperAdminsCanConfigureJobsAndSavedSchedulesTakeEffect() throws Exception {
@@ -1027,12 +1227,12 @@ class RegressionIntegrationTest {
         mvc.perform(put(url).contentType("application/json").content(draft.toString()).header("Authorization", "Bearer " + superAdmin))
                 .andExpect(status().isConflict());
 
-        ObjectNode general = (ObjectNode) settings(admin);
+        ObjectNode general = (ObjectNode) settings(superAdmin);
         for (String field : List.of("slaCron", "contactCron", "slaScanEnabled", "contactSyncEnabled", "slaReminderHours", "confirmationReminderHours"))
             assertFalse(general.has(field));
         general.put("slaScanEnabled", false).put("slaCron", "0 0 1 * * ?").put("contactSyncEnabled", false)
                 .put("slaReminderHours", 9).put("confirmationReminderHours", 8);
-        body(mvc.perform(put("/admin/manage/settings").contentType("application/json").content(general.toString()).header("Authorization", "Bearer " + admin)));
+        body(mvc.perform(put("/admin/manage/settings").contentType("application/json").content(general.toString()).header("Authorization", "Bearer " + superAdmin)));
         ObjectNode saved = (ObjectNode) body(mvc.perform(get(url).header("Authorization", "Bearer " + superAdmin))).path("settings");
         assertTrue(saved.path("slaScanEnabled").asBoolean());
         assertTrue(saved.path("contactSyncEnabled").asBoolean());
@@ -1115,6 +1315,86 @@ class RegressionIntegrationTest {
         assertTrue(overview.hasNonNull("responseSlaRate"));
     }
 
+    @Test void overdueLoansShareQuotaUntilAReturnApplicationIsSubmitted() throws Exception {
+        String owner = login("张伟"), staff = login("陈静"), other = login("普通用户乙");
+        var today = LocalDate.now(ScheduledJobs.ZONE);
+        db.update("insert into sys_setting(setting_key,setting_value) values('runtime',?)",
+                "{\"handoverCategories\":{\"RETURN\":[\"终端\"]}}");
+        db.update("insert into it_asset(no,name,category,status,borrower,borrower_id,borrow_due) values "
+                + "('AS-QUOTA-LATE','逾期设备','终端','借出中','张伟',1,?),"
+                + "('AS-QUOTA-SUPPLEMENT','待补交归还设备','终端','借出中','张伟',1,?),"
+                + "('AS-QUOTA-TODAY','今日到期设备','终端','借出中','张伟',1,?),"
+                + "('AS-QUOTA-OTHER','其他账号设备','终端','借出中','张伟',6,?)",
+                today.minusDays(1), today.minusDays(2), today, today.minusDays(2));
+        for (int i = 0; i < 2; i++) body(mvc.perform(registerMissingReport(staff, evidence())));
+        String supplement = body(mvc.perform(registerMissingReport(staff,
+                Map.of("businessType", "RETURN", "assetNo", "AS-QUOTA-SUPPLEMENT"), evidence()))).path("no").asText();
+
+        var summary = body(mvc.perform(get("/missing-reports/summary").header("Authorization", "Bearer " + owner)));
+        assertEquals(4, summary.path("pending").asInt());
+        assertEquals(2, summary.path("pendingByType").path("repair").asInt());
+        assertEquals(1, summary.path("pendingByType").path("overdueReturn").asInt());
+        assertEquals(1, summary.path("pendingByType").path("returnCount").asInt());
+        assertTrue(summary.path("blocked").asBoolean());
+        var order = body(mvc.perform(get("/tickets").header("Authorization", "Bearer " + staff))).path("list").get(0);
+        assertEquals(1, order.path("pendingByType").path("overdueReturn").asInt());
+        assertEquals(1, order.path("pendingByType").path("returnCount").asInt());
+        assertEquals(1, body(mvc.perform(get("/missing-reports/summary").header("Authorization", "Bearer " + other)))
+                .path("pending").asInt());
+        mvc.perform(get("/assets").header("Authorization", "Bearer " + owner)).andExpect(status().isConflict());
+        var due = body(mvc.perform(get("/assets/borrow-due").header("Authorization", "Bearer " + owner)));
+        assertEquals(2, due.path("overdue").size());
+        assertEquals(1, due.path("upcoming").size());
+        assertEquals("AS-QUOTA-TODAY", due.path("upcoming").get(0).path("no").asText());
+        assertEquals("AS-QUOTA-SUPPLEMENT", due.path("returnSupplementAssets").get(0).asText());
+        assertFalse(due.toString().contains("AS-QUOTA-OTHER"));
+
+        newReturn("AS-QUOTA-TODAY", owner).andExpect(status().isConflict());
+        newReturn("AS-QUOTA-OTHER", owner).andExpect(status().isConflict());
+        newReturn("AS-QUOTA-SUPPLEMENT", owner).andExpect(status().isConflict());
+        mvc.perform(post("/tickets").header("Authorization", "Bearer " + owner).contentType("application/json")
+                .content("{\"title\":\"额度阻止报修\",\"description\":\"测试额度\",\"location\":\"一楼\",\"cat1\":\"终端\"}"))
+                .andExpect(status().isConflict());
+
+        long cancelled = body(newReturn("AS-QUOTA-LATE", owner)).path("id").asLong();
+        newReturn("AS-QUOTA-LATE", owner).andExpect(status().isConflict());
+        var submitted = body(mvc.perform(get("/missing-reports/summary").header("Authorization", "Bearer " + owner)));
+        assertEquals(3, submitted.path("pending").asInt());
+        assertEquals(0, submitted.path("pendingByType").path("overdueReturn").asInt());
+        assertFalse(submitted.path("blocked").asBoolean());
+        body(mvc.perform(post("/asset-requests/" + cancelled + "/cancel").header("Authorization", "Bearer " + owner)));
+        assertTrue(body(mvc.perform(get("/missing-reports/summary").header("Authorization", "Bearer " + owner)))
+                .path("blocked").asBoolean());
+
+        long rejected = body(newReturn("AS-QUOTA-LATE", owner)).path("id").asLong();
+        body(mvc.perform(post("/asset-requests/" + rejected + "/reject").header("Authorization", "Bearer " + staff)
+                .contentType("application/json").content("{\"reason\":\"需要补充归还说明\"}")));
+        assertEquals(4, body(mvc.perform(get("/missing-reports/summary").header("Authorization", "Bearer " + owner)))
+                .path("pending").asInt());
+
+        long id = body(newReturn("AS-QUOTA-LATE", owner)).path("id").asLong();
+        assertEquals("APPROVED", body(mvc.perform(post("/asset-requests/" + id + "/approve")
+                .header("Authorization", "Bearer " + staff))).path("status").asText());
+        assertEquals("借出中", db.queryForObject("select status from it_asset where no='AS-QUOTA-LATE'", String.class));
+        assertFalse(body(mvc.perform(get("/missing-reports/summary").header("Authorization", "Bearer " + owner)))
+                .path("blocked").asBoolean());
+        assertEquals("COMPLETED", body(mvc.perform(post("/asset-requests/" + id + "/handover")
+                .header("Authorization", "Bearer " + staff))).path("status").asText());
+        var released = body(mvc.perform(get("/missing-reports/summary").header("Authorization", "Bearer " + owner)));
+        assertEquals(3, released.path("pending").asInt());
+        assertEquals(0, released.path("pendingByType").path("overdueReturn").asInt());
+        assertFalse(released.path("blocked").asBoolean());
+        body(submitAssetSupplement(supplement, owner));
+        assertEquals(2, body(mvc.perform(get("/missing-reports/summary").header("Authorization", "Bearer " + owner)))
+                .path("pending").asInt());
+    }
+
+    private ResultActions newReturn(String assetNo, String token) throws Exception {
+        return mvc.perform(post("/asset-requests").header("Authorization", "Bearer " + token)
+                .contentType("application/json").content(json.writeValueAsString(
+                        Map.of("type", "RETURN", "assetNo", assetNo, "reason", "线下归还设备"))));
+    }
+
     @Test void loanDueListsAndRemindersArePrivateAndLeadToTheSpecificReturn() throws Exception {
         String employee = login("张伟");
         var today = LocalDate.now();
@@ -1139,7 +1419,7 @@ class RegressionIntegrationTest {
     }
 
     @Test void theCalendarCanKeepTheSlaRunningWhileWaitingForInformation() throws Exception {
-        String admin = login("陈静"), employee = login("张伟"), engineer = login("李强");
+        String admin = loginSuperAdmin(), employee = login("张伟"), engineer = login("李强");
         var edits = (ObjectNode) settings(admin);
         var calendar = (ObjectNode) edits.path("slaCalendar");
         calendar.put("pauseForInfo", false);
@@ -1205,7 +1485,7 @@ class RegressionIntegrationTest {
 
         ObjectNode olderPayload = saved.deepCopy();
         olderPayload.remove("duty");
-        olderPayload.put("maxAttachments", 5);
+        olderPayload.put("approvalPollMinutes", 5);
         JsonNode updated = body(mvc.perform(put(settingsUrl).contentType("application/json").content(olderPayload.toString())
                 .header("Authorization","Bearer "+admin)));
         assertEquals(5, updated.path("revision").asInt());
@@ -1224,7 +1504,8 @@ class RegressionIntegrationTest {
         mvc.perform(put("/admin/manage/departments/1").contentType("application/json").content("{\"name\":\"技术中心\",\"parentId\":2,\"sort\":0}").header("Authorization","Bearer "+admin)).andExpect(status().isBadRequest());
         JsonNode dept=body(mvc.perform(post("/admin/manage/departments").contentType("application/json").content("{\"name\":\"新部门\",\"parentId\":0,\"sort\":1}").header("Authorization","Bearer "+admin)));
         mvc.perform(delete("/admin/manage/departments/"+dept.get("id").asLong()).header("Authorization","Bearer "+admin)).andExpect(status().isOk());
-        assertTrue(body(mvc.perform(get("/admin/manage/audit").header("Authorization","Bearer "+admin))).get("total").asInt()>=3);
+        mvc.perform(get("/admin/manage/audit").header("Authorization","Bearer "+admin)).andExpect(status().isForbidden());
+        assertTrue(body(mvc.perform(get("/admin/manage/audit").header("Authorization","Bearer "+loginSuperAdmin()))).get("total").asInt()>=3);
     }
 
     @Test void solutionDictionaryPersistsAndProtectsHistoricalCodes() throws Exception {
@@ -1521,6 +1802,50 @@ class RegressionIntegrationTest {
         mvc.perform(multipart("/attachments").file(file()).param("bizType","TICKET").param("bizNo","IT-TEST-0001").header("Authorization","Bearer "+viewer)).andExpect(status().isForbidden());
         mvc.perform(multipart("/attachments").file(file()).param("bizType","REQUEST").param("bizNo","AS-TEST-1").header("Authorization","Bearer "+viewer)).andExpect(status().isForbidden());
         mvc.perform(get("/admin/manage/permissions").header("Authorization","Bearer "+viewer)).andExpect(status().isForbidden());
+    }
+
+    @Test void ordinaryUsersSeeOnlyOwnedTicketsEvenWithLegacyStaffPermissions() throws Exception {
+        String owner = login("张伟"), other = login("普通用户乙"), admin = login("陈静"), viewer = login("赵敏");
+        db.update("update sys_user set name='张伟' where id=6");
+        String otherNo = submitNotificationTicket(other, "INCIDENT", "无法开机");
+        db.update("update it_ticket set asset_no='ASSET-TEST-1' where no in ('IT-TEST-0001',?)", otherNo);
+        var attachment = body(mvc.perform(multipart("/attachments").file(file()).param("bizType", "TICKET").param("bizNo", otherNo)
+                .header("Authorization", "Bearer " + other)));
+
+        ObjectNode legacy = policy(admin);
+        var staffKeys = List.of("ticket.view.all", "ticket.accept", "ticket.dispatch", "ticket.handle");
+        staffKeys.forEach(((ArrayNode) legacy.path("assignments").path("USER"))::add);
+        db.update("insert into sys_setting(setting_key,setting_value) values('role-permissions',?)", legacy.toString());
+        var effective = policy(admin).path("assignments").path("USER");
+        var me = body(mvc.perform(get("/auth/me").header("Authorization", "Bearer " + owner))).path("permissions");
+        for (String key : staffKeys) {
+            assertFalse(effective.toString().contains("\"" + key + "\""));
+            assertFalse(me.toString().contains("\"" + key + "\""));
+        }
+        mvc.perform(put("/admin/manage/permissions").contentType("application/json").content(legacy.toString())
+                .header("Authorization", "Bearer " + admin)).andExpect(status().isBadRequest());
+
+        var page = body(mvc.perform(get("/tickets").param("mine", "false").param("assetNo", "ASSET-TEST-1")
+                .header("Authorization", "Bearer " + owner)));
+        assertEquals(1, page.path("total").asInt());
+        assertEquals("IT-TEST-0001", page.path("list").get(0).path("no").asText());
+        assertEquals(0, body(mvc.perform(get("/tickets").param("keyword", otherNo)
+                .header("Authorization", "Bearer " + owner))).path("total").asInt());
+        mvc.perform(get("/tickets/" + otherNo).header("Authorization", "Bearer " + owner)).andExpect(status().isForbidden());
+        mvc.perform(get("/attachments/raw/" + attachment.path("storedName").asText())
+                .header("Authorization", "Bearer " + owner)).andExpect(status().isForbidden());
+        assertEquals(otherNo, body(mvc.perform(get("/tickets/" + otherNo).header("Authorization", "Bearer " + viewer)))
+                .path("ticket").path("no").asText());
+
+        db.update("insert into it_notify(to_user,recipient_id,title,type,ref_no) values"
+                + "('张伟',1,'本人通知','TICKET','IT-TEST-0001'),('张伟',1,'旧授权通知','SLA',?),"
+                + "('张伟',null,'同名旧通知','TICKET',?),('张伟',1,'系统通知','SYSTEM',null)", otherNo, otherNo);
+        var notices = body(mvc.perform(get("/notifies").header("Authorization", "Bearer " + owner)));
+        assertEquals(2, notices.size());
+        assertFalse(notices.toString().contains(otherNo));
+        assertEquals(2, body(mvc.perform(get("/notifies/unread-count").header("Authorization", "Bearer " + owner))).path("count").asInt());
+        body(mvc.perform(post("/notifies/read-all").header("Authorization", "Bearer " + owner)));
+        assertEquals(2, db.queryForObject("select count(*) from it_notify where ref_no=? and to_user='张伟' and is_read=0", Integer.class, otherNo));
     }
 
     @Test void permissionRevocationAndRestorationApplyToExistingJwt() throws Exception {

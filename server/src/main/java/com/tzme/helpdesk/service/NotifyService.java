@@ -72,7 +72,10 @@ public class NotifyService {
         for (User recipient : recipients) {
             String id = recipient.getDingUserId();
             if (id == null || id.isBlank()) continue;
-            var action = actionFor(permissions.resolve(recipient), type, refNo, title, content);
+            LoginUser user = permissions.resolve(recipient);
+            if (("TICKET".equals(type) || "SLA".equals(type)) && !user.canManageTickets()
+                    && (!user.hasPermission("ticket.view.own") || !user.id().equals(notifyMapper.ticketCreatorId(refNo)))) continue;
+            var action = actionFor(user, type, refNo, title, content);
             groups.computeIfAbsent(action, ignored -> new LinkedHashSet<>()).add(id);
         }
         groups.forEach((action, ids) -> {
@@ -128,7 +131,7 @@ public class NotifyService {
     }
 
     public List<Notify> list(LoginUser user) {
-        List<Notify> rows = notifyMapper.listByUser(user.id(), user.name());
+        List<Notify> rows = notifyMapper.listByUser(user.id(), user.name(), user.canManageTickets(), user.hasPermission("ticket.view.own"));
         for (Notify row : rows) {
             row.setAction(actionFor(user, row.getType(), row.getRefNo(), row.getTitle(), row.getContent()));
         }
@@ -145,8 +148,6 @@ public class NotifyService {
             case "BORROW_DUE" -> user.hasPermission("asset.view") && user.hasPermission("request.create")
                     ? new NotificationAction("申请归还", "/assets?returnAsset=" + refNo) : null;
             case "TICKET", "SLA" -> {
-                if (!user.hasPermission("ticket.view.all")
-                        && (NEW_TICKET.equals(title) || !user.hasPermission("ticket.view.own"))) yield null;
                 String label = "查看工单";
                 if (NEW_TICKET.equals(title) && user.hasPermission("ticket.accept")) label = "去受理";
                 if ("工单待确认".equals(title) && user.hasPermission("ticket.confirm")) label = "确认结果";
@@ -172,14 +173,14 @@ public class NotifyService {
     }
 
     public long unread(LoginUser user) {
-        return notifyMapper.countUnread(user.id(), user.name());
+        return notifyMapper.countUnread(user.id(), user.name(), user.canManageTickets(), user.hasPermission("ticket.view.own"));
     }
 
     public void markRead(Long id, LoginUser user) {
-        notifyMapper.markRead(id, user.id(), user.name());
+        notifyMapper.markRead(id, user.id(), user.name(), user.canManageTickets(), user.hasPermission("ticket.view.own"));
     }
 
     public void markAllRead(LoginUser user) {
-        notifyMapper.markAllRead(user.id(), user.name());
+        notifyMapper.markAllRead(user.id(), user.name(), user.canManageTickets(), user.hasPermission("ticket.view.own"));
     }
 }

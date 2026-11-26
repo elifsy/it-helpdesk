@@ -350,7 +350,7 @@ public class AssetService {
         return stateActions(a,user.id()).stream().filter(action -> "REPAIR".equals(action) ? user.hasPermission("ticket.create") : user.hasPermission("request.create")).toList();
     }
 
-    private List<String> stateActions(Asset a,Long userId) {
+    List<String> stateActions(Asset a, Long userId) {
         List<String> acts = new ArrayList<>();
         if (a == null || userId == null) {
             return acts;

@@ -5,6 +5,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
+import java.time.LocalDate;
 import java.util.Map;
 
 @Mapper
@@ -27,12 +28,14 @@ public interface AssetRequestMapper {
                             @Param("applicant") String applicant,
                             @Param("applicantId") Long applicantId,
                             @Param("type") String type,
-                            @Param("no") String no);
+                            @Param("no") String no,
+                            @Param("supplementDate") LocalDate supplementDate);
 
     /** 同一人对同一设备待审批的申请：用于阻止重复提交 */
-    @org.apache.ibatis.annotations.Select("select * from it_asset_request where applicant=#{applicant} and asset_no=#{assetNo} " +
-            "and status not in ('COMPLETED','REJECTED','CANCELLED') order by id desc limit 1")
-    AssetRequest findPendingByApplicantAndAsset(@Param("applicant") String applicant, @Param("assetNo") String assetNo);
+    @org.apache.ibatis.annotations.Select("select r.* from it_asset_request r where r.asset_no=#{assetNo} "
+            + "and coalesce(r.applicant_id,(select case when count(*)=1 then min(u.id) end from sys_user u where u.name=r.applicant))=#{applicantId} "
+            + "and r.status not in ('COMPLETED','REJECTED','CANCELLED') order by r.id desc limit 1")
+    AssetRequest findPendingByApplicantAndAsset(@Param("applicantId") Long applicantId, @Param("assetNo") String assetNo);
 
     /** 已发起钉钉审批、仍等待结果的申请：轮询同步用 */
     @org.apache.ibatis.annotations.Select("select r.*, a.name as assetName, a.category as assetCategory " +
@@ -50,6 +53,13 @@ public interface AssetRequestMapper {
     @org.apache.ibatis.annotations.Select("select * from it_asset_request where asset_no=#{assetNo} " +
             "and status='APPROVED' and handover_status='PICKUP' order by id desc limit 1")
     AssetRequest findReservedByAsset(@Param("assetNo") String assetNo);
+
+    @org.apache.ibatis.annotations.Select("select count(*) from it_asset_request r where "
+            + "(r.asset_no in (#{assetNo},#{newAssetNo}) or r.new_asset_no in (#{assetNo},#{newAssetNo})) "
+            + "and (r.status='APPROVED' or (r.status='PENDING' and "
+            + "coalesce(r.applicant_id,(select case when count(*)=1 then min(u.id) end from sys_user u where u.name=r.applicant))=#{applicantId}))")
+    int countSupplementConflicts(@Param("applicantId") Long applicantId,
+                                 @Param("assetNo") String assetNo, @Param("newAssetNo") String newAssetNo);
 
     long countPending();
 }

@@ -11,7 +11,9 @@ import com.tzme.helpdesk.dto.JobSettings;
 import com.tzme.helpdesk.dto.RuntimeSettings;
 import com.tzme.helpdesk.dto.SlaCalendar;
 import com.tzme.helpdesk.mapper.ManagementMapper;
+import com.tzme.helpdesk.security.Permissions;
 import com.tzme.helpdesk.security.Roles;
+import jakarta.validation.Validator;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.DependsOn;
@@ -27,8 +29,12 @@ import java.util.*;
 @DependsOn("managementSchemaInitializer")
 @RequiredArgsConstructor
 public class RuntimeSettingsService {
+    private static final Set<String> DELEGATED_FIELDS = Set.of(
+            "revision", "duty", "handoverCategories", "approvalEnabled", "approvalMock",
+            "approvalPollMinutes", "approvalProcessCodes", "approvalMappings", "categories", "categoriesByType");
     private final ManagementMapper mapper;
     private final ObjectMapper json;
+    private final Validator validator;
     private final HelpdeskProperties props;
     private final AuditService audit;
     private final ApplicationEventPublisher events;
@@ -43,17 +49,33 @@ public class RuntimeSettingsService {
         return normalize(defaults);
     }
 
-    public ObjectNode forClient(RuntimeSettings value) {
+    private ObjectNode generalSettings(RuntimeSettings value) {
         ObjectNode result = json.valueToTree(value);
         result.remove(List.of("slaScanEnabled", "contactSyncEnabled", "slaCron", "contactCron", "slaReminderHours", "confirmationReminderHours"));
         return result;
     }
 
+    public ObjectNode managementView(RuntimeSettings value) {
+        ObjectNode result = generalSettings(value);
+        if (!CurrentUser.require().hasRole(Roles.SUPER_ADMIN)) result.retain(DELEGATED_FIELDS);
+        return result;
+    }
+
     @Transactional
-    public RuntimeSettings save(RuntimeSettings input) {
-        com.tzme.helpdesk.security.Permissions.require("settings.manage");
+    public RuntimeSettings save(ObjectNode update) {
+        Permissions.require("settings.manage");
+        boolean superAdmin = CurrentUser.require().hasRole(Roles.SUPER_ADMIN);
+        if (!superAdmin) {
+            update.fieldNames().forEachRemaining(field -> {
+                if (!DELEGATED_FIELDS.contains(field)) throw new BizException(403,"仅超级管理员可修改该配置");
+            });
+            if (!update.hasNonNull("revision")) throw new BizException("请重新加载配置再保存");
+        }
         mapper.createSetting("runtime", write(get()));
         RuntimeSettings previous = read(mapper.lockSetting("runtime"));
+        // 委派配置合并到锁定的当前版本，避免未返回的字段被 DTO 默认值覆盖。
+        ObjectNode value = superAdmin ? update : json.<ObjectNode>valueToTree(previous).setAll(update);
+        RuntimeSettings input = readUpdate(value);
         if (!previous.getRevision().equals(input.getRevision())) throw new BizException(409,"配置已被其他管理员修改，请刷新后重试");
         input.setSlaScanEnabled(previous.getSlaScanEnabled());
         input.setContactSyncEnabled(previous.getContactSyncEnabled());
@@ -65,15 +87,29 @@ public class RuntimeSettingsService {
         if (input.getSlaCalendar() == null) input.setSlaCalendar(previous.getSlaCalendar());
         boolean legacyChanged = !Objects.equals(previous.getCategories(), input.getCategories());
         boolean typedChanged = input.getCategoriesByType() != null && !Objects.equals(previous.getCategoriesByType(), input.getCategoriesByType());
-        if (legacyChanged || typedChanged) com.tzme.helpdesk.security.Permissions.require("dict.manage");
+        if (legacyChanged || typedChanged) Permissions.require("dict.manage");
         if (legacyChanged && !typedChanged) input.setCategoriesByType(null);
         else if (input.getCategoriesByType() == null) input.setCategoriesByType(previous.getCategoriesByType());
         validate(input);
         input.setRevision(previous.getRevision()+1);
         mapper.updateSetting("runtime", write(input));
         audit.record("SETTINGS_UPDATE", "runtime", "配置版本 " + previous.getRevision() + " → " + input.getRevision()
-                + "；修改前：" + forClient(previous) + "；修改后：" + forClient(input));
+                + "；修改前：" + generalSettings(previous) + "；修改后：" + generalSettings(input));
         return input;
+    }
+
+    private RuntimeSettings readUpdate(ObjectNode request) {
+        try {
+            RuntimeSettings input = json.treeToValue(request, RuntimeSettings.class);
+            var invalid = validator.validate(input).stream().findFirst();
+            if (invalid.isPresent()) {
+                var violation = invalid.get();
+                throw new BizException(violation.getPropertyPath() + " " + violation.getMessage());
+            }
+            return input;
+        } catch (JsonProcessingException e) {
+            throw new BizException("请求参数不合法");
+        }
     }
 
     public JobSettings jobs() {

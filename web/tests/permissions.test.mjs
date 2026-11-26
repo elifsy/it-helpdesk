@@ -43,19 +43,31 @@ test('delegated management capabilities expose their own sections only', () => {
   assert.equal(routeAllowed(['IT'], '/admin/config?tab=dict', ['dict.manage']), true)
   assert.equal(routeAllowed(['IT'], '/admin/config?tab=depts', ['contact.sync']), true)
 })
-test('scheduled jobs are exclusive to super administrators', () => {
-  const path = '/admin/config?tab=jobs'
-  for (const role of ['ADMIN', 'IT', 'USER', 'VIEWER']) {
-    assert.equal(routeAllowed([role], path, ['settings.manage']), false)
+test('protected configuration tabs require the super administrator role even with delegated permissions', () => {
+  const permissions = ['settings.manage', 'audit.view', 'dict.manage']
+  for (const tab of ['sla', 'audit', 'storage', 'jobs']) {
+    const path = '/admin/config?tab=' + tab
+    for (const role of ['ADMIN', 'IT', 'USER', 'VIEWER']) {
+      assert.equal(routeAllowed([role], path, permissions), false)
+    }
+    assert.equal(routeAllowed(['SUPER_ADMIN'], path, permissions), true)
   }
-  assert.equal(routeAllowed(['SUPER_ADMIN'], path, ['settings.manage']), true)
-  assert.equal(routeAllowed(['ADMIN'], '/admin/config', ['settings.manage']), true)
+  for (const path of ['/admin/config', '/admin/config?tab=duty', '/admin/config?tab=dict', '/admin/ding-approval']) {
+    assert.equal(routeAllowed(['ADMIN'], path, permissions), true)
+  }
 })
 test('a user without business permissions still has a safe home route', () => {
   assert.equal(homeForRoles(['USER'], []), '/home')
   assert.equal(routeAllowed(['USER'], '/home', []), true)
   assert.equal(routeAllowed(['USER'], '/new', []), false)
   assert.equal(routeAllowed(['USER'], '/tickets', []), false)
+})
+test('ordinary users cannot open the ticket center with stale all-ticket permissions', () => {
+  const permissions = ['ticket.view.all', 'ticket.view.own']
+  assert.equal(routeAllowed(['USER'], '/admin/tickets', permissions), false)
+  assert.equal(routeAllowed(['USER'], '/admin/ticket/IT-TEST-0001', permissions), false)
+  assert.equal(routeAllowed(['USER'], '/tickets', permissions), true)
+  assert.equal(routeAllowed(['VIEWER'], '/admin/tickets', permissions), true)
 })
 test('device detail deep links require the same viewing permission as the ledger', () => {
   assert.equal(routeAllowed(['VIEWER'], '/admin/assets/IT-PC-2026-0001', ['asset.view']), true)

@@ -5,6 +5,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
+import java.time.LocalDate;
 import java.util.Map;
 
 @Mapper
@@ -25,7 +26,8 @@ public interface PurchaseRequestMapper {
                                @Param("applicant") String applicant,
                                @Param("applicantId") Long applicantId,
                                @Param("mine") boolean mine,
-                               @Param("no") String no);
+                               @Param("no") String no,
+                               @Param("supplementDate") LocalDate supplementDate);
 
     long countPending();
 

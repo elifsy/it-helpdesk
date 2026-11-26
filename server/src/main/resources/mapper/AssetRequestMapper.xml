@@ -2,6 +2,11 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.tzme.helpdesk.mapper.AssetRequestMapper">
 
+  <resultMap id="assetRequestWithSupplements" type="com.tzme.helpdesk.domain.AssetRequest" autoMapping="true">
+    <id property="id" column="id"/>
+    <association property="pendingByType" resultMap="com.tzme.helpdesk.mapper.MissingReportMapper.pendingCounts"/>
+  </resultMap>
+
   <insert id="insert" useGeneratedKeys="true" keyProperty="id">
     insert into it_asset_request(no,type,asset_no,applicant,applicant_id,dept,reason,expect_return,new_asset_no,status)
     values(#{no},#{type},#{assetNo},#{applicant},#{applicantId},#{dept},#{reason},#{expectReturn},#{newAssetNo},'PENDING')
@@ -39,12 +44,14 @@
     where r.no = #{no}
   </select>
 
-  <select id="list" resultType="com.tzme.helpdesk.domain.AssetRequest">
-    select r.*, a.name as assetName, a.category as assetCategory,
-      (select count(*) from it_missing_report m where m.status='PENDING' and m.requester_id =
-        coalesce(r.applicant_id, (select case when count(*)=1 then min(u.id) end from sys_user u where u.name=r.applicant)))
-      as pending_report_count
+  <select id="list" resultMap="assetRequestWithSupplements">
+    select r.*, a.name as assetName, a.category as assetCategory
+    <if test="supplementDate != null">, supplements.*</if>
     from it_asset_request r left join it_asset a on a.no = r.asset_no
+    <if test="supplementDate != null">
+      <include refid="com.tzme.helpdesk.mapper.MissingReportMapper.pendingByRequester"/>
+        on supplements.supplement_requester_id=coalesce(r.applicant_id, (select case when count(*)=1 then min(u.id) end from sys_user u where u.name=r.applicant))
+    </if>
     <where>
       <if test="status != null and status != ''">and r.status = #{status}</if>
       <if test="no != null and no != ''">and r.no = #{no}</if>

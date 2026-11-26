@@ -45,7 +45,34 @@ export interface LoginResult {
   dingUserId?: string
 }
 
-export interface MissingReportSummary { pending: number; limit: number; blocked: boolean }
+export interface PendingReportCounts {
+  repair: number
+  receive: number
+  borrow: number
+  replace: number
+  returnCount: number
+  overdueReturn?: number
+}
+
+export type MissingReportType = 'REPAIR' | 'RECEIVE' | 'BORROW' | 'REPLACE' | 'RETURN'
+export interface MissingReportAsset {
+  no: string
+  name: string
+  model?: string | null
+  category: string
+  status: string
+  location?: string | null
+}
+export interface MissingReportAssetOptions {
+  primary: MissingReportAsset[]
+  replacement: MissingReportAsset[]
+}
+export interface MissingReportSummary {
+  pending: number
+  limit: number
+  blocked: boolean
+  pendingByType: PendingReportCounts
+}
 export interface MissingReport {
   no: string
   requesterId: number
@@ -56,6 +83,11 @@ export interface MissingReport {
   channel: 'CHAT' | 'PHONE'
   completedAt: string
   status: 'PENDING' | 'SUBMITTED' | 'CANCELLED'
+  businessType: MissingReportType
+  assetNo?: string
+  newAssetNo?: string
+  expectReturn?: string
+  assetRequestNo?: string
   ticketNo?: string
   cancelReason?: string
 }
@@ -66,15 +98,27 @@ export const missingReportApi = {
   mine: () => http.get<any, MissingReport[]>('/missing-reports/mine'),
   list: (page: number) => http.get<any, { list: MissingReport[]; total: number; size: number }>('/missing-reports', { params: { page } }),
   search: (keyword: string) => http.get<any, MissingReportRequester[]>('/missing-reports/requesters', { params: { keyword } }),
-  detail: (no: string) => http.get<any, { report: MissingReport; evidence: { id: number; storedName: string; fileName: string; contentType?: string | null }[] }>(`/missing-reports/${encodeURIComponent(no)}`),
-  register: (report: { requesterId: number; title: string; description: string; channel: string; completedAt: string }, evidence: File) => {
+  assetOptions: (requesterId: number, type: MissingReportType) =>
+    http.get<any, MissingReportAssetOptions>('/missing-reports/asset-options', { params: { requesterId, type } }),
+  detail: (no: string) => http.get<any, {
+    report: MissingReport
+    evidence: { id: number; storedName: string; fileName: string; contentType?: string | null }[]
+    asset?: MissingReportAsset
+    replacement?: MissingReportAsset
+  }>(`/missing-reports/${encodeURIComponent(no)}`),
+  register: (report: {
+    requesterId: number; title: string; description: string; channel: string; completedAt: string
+    businessType?: MissingReportType; assetNo?: string; newAssetNo?: string; expectReturn?: string
+  }, evidence: readonly File[]) => {
     const form = new FormData()
     form.append('report', new Blob([JSON.stringify(report)], { type: 'application/json' }), 'report.json')
-    form.append('evidence', evidence)
+    for (const file of evidence) form.append('evidence', file)
     return http.post<any, MissingReport>('/missing-reports', form)
   },
   submit: (no: string, form: { title: string; description: string; location: string; type: string; cat1: string; cat2: string }) =>
     http.post<any, { no: string }>(`/missing-reports/${encodeURIComponent(no)}/submit`, form),
+  submitAsset: (no: string, reason: string) =>
+    http.post<any, { no: string }>(`/missing-reports/${encodeURIComponent(no)}/submit-asset`, { reason }),
   cancel: (no: string, reason: string) => http.post(`/missing-reports/${encodeURIComponent(no)}/cancel`, { reason })
 }
 
@@ -147,8 +191,19 @@ export const assetApi = {
   }
 }
 
-export interface BorrowDueDevice { no: string; name: string; borrowDue: string }
-export interface BorrowDueList { upcoming: BorrowDueDevice[]; overdue: BorrowDueDevice[]; advanceDays: number }
+export interface BorrowDueDevice {
+  no: string
+  name: string
+  borrowDue: string
+  category?: string | null
+  icon?: string | null
+}
+export interface BorrowDueList {
+  upcoming: BorrowDueDevice[]
+  overdue: BorrowDueDevice[]
+  advanceDays: number
+  returnSupplementAssets?: string[]
+}
 
 export interface AssetCategory { id: number; name: string; sort: number; assetCount: number }
 export const assetCategoryApi = {
